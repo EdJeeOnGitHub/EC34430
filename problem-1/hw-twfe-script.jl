@@ -382,9 +382,7 @@ function generateEventStudy(eventStudyPanel, initial, final)
     return eventStudy
 end
 
-[1, 2, 3, 4 ]
 
-generateEventStudy.(eventStudyPanel, 1, [1, 2, 3, 4])
 eventStudySwitchersDown = broadcast(x -> generateEventStudy(eventStudyPanel, 1, x).lw_mean, [1, 2, 3, 4])
 eventStudySwitchersUp = broadcast(
     x -> generateEventStudy(eventStudyPanel, 4, x).lw_mean,
