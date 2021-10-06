@@ -306,21 +306,44 @@ df[!, :dummy] .= 1;
 
 
 #1. Mean wage within firm: 
+function find_move_year(df, order, sort_id_1, sort_id_2, spell_var)
+    if order == "forward"
+        order = true
+        varname = :years_at_firm_sofar
+    end
+
+    if order == "backward" 
+        order = false
+        varname = :years_at_firm_sofar_inverse
+    end
+    
+
+    year_df =  @chain df begin
+        sort([sort_id_1, sort_id_2], rev = order)
+        groupby([sort_id_1, spell_var])
+        transform(:dummy .=> cumsum => varname)
+    end
+    return  year_df
+end
+
+
+find_move_year(ed_panel, "forward", :i, :t, :spell)
+
+
 eventStudyPanel =  @chain df begin
     groupby([:j, :t]) # Group by firm and time 
     transform(:lw => mean) # Obtain wage at that group level
-    @transform!(:wage_percentile = cut(:lw_mean,4)) # Get wage_percentile at same level of agregation
+    @transform!(:wage_percentile = cut(:lw_mean, 4)) # Get wage_percentile at same level of agregation
     groupby([:i, :spell])
     transform(nrow => :years_at_firm) # Get number of years individual spend at a single firm
-    sort([:i,:t], rev = true) # Sort over time by individual (this helps to get first 2 periods of last firm)
-    groupby([:i, :spell])  # by group and spell 
-    transform(:dummy .=>  cumsum => :years_at_firm_sofar) # Get the number of years spent at a firm so far
-    sort([:i,:t], rev = false) # Sort over time by individual (this helps to get first 2 periods of last firm)
-    groupby([:i, :spell])  # by group and spell
-    transform(:dummy .=>  cumsum => :years_at_firm_sofar_inverse) # Get the number of years spent at a firm so far, but backwards.
+    find_move_year(_, "forward", :i, :t, :spell) # generating event time indicators
+    find_move_year(_, "backward", :i, :t, :spell)
+
+
     @aside initialFirmDataFrame = @chain _ begin
         subset(:spell => ByRow(==(1)), :years_at_firm_sofar_inverse => ByRow(<=(2))) # Generate dataframe for initial firm, keep last two years (call it initialFirmDataFrame)
     end
+
     subset(:spell => ByRow(==(0)), :years_at_firm_sofar => ByRow(<=(2))) # Generate dataframe for subsequent firm, keep first two years
     append!(initialFirmDataFrame) # Append both dataframes
     groupby(:i) # group by person 
@@ -356,20 +379,19 @@ function generateEventStudy(eventStudyPanel, initial, final)
                             combine(:lw => mean)
                             sort(:event_time)
     end
+    return eventStudy
 end
 
+[1, 2, 3, 4 ]
 
-eventStudySwitchers = [generateEventStudy(eventStudyPanel, 1, 1).lw_mean,
-                        generateEventStudy(eventStudyPanel, 1, 2).lw_mean,
-                        generateEventStudy(eventStudyPanel, 1, 3).lw_mean,
-                        generateEventStudy(eventStudyPanel, 1, 4).lw_mean]
-eventStudySwitchers2 = [generateEventStudy(eventStudyPanel, 4, 1).lw_mean,
-                        generateEventStudy(eventStudyPanel, 4, 2).lw_mean,
-                        generateEventStudy(eventStudyPanel, 4, 3).lw_mean,
-                        generateEventStudy(eventStudyPanel, 4, 4).lw_mean];
-
-plot(1:4,eventStudySwitchers, label=["1 to 1" "1 to 2" "1 to 3" "1 to 4"],markershape = :square)
-plot!(1:4,eventStudySwitchers2,label =  ["4 to 1 " "4 to 2" "4 to 3" "4 to 4"],markershape = :circle)
+generateEventStudy.(eventStudyPanel, 1, [1, 2, 3, 4])
+eventStudySwitchersDown = broadcast(x -> generateEventStudy(eventStudyPanel, 1, x).lw_mean, [1, 2, 3, 4])
+eventStudySwitchersUp = broadcast(
+    x -> generateEventStudy(eventStudyPanel, 4, x).lw_mean,
+    [1, 2, 3, 4]
+)
+plot(1:4,eventStudySwitchersDown, label=["1 to 1" "1 to 2" "1 to 3" "1 to 4"],markershape = :square)
+plot!(1:4,eventStudySwitchersUp,label =  ["4 to 1 " "4 to 2" "4 to 3" "4 to 4"],markershape = :circle)
 plot!(legend=:outertopright)
 
 # %% [markdown]
