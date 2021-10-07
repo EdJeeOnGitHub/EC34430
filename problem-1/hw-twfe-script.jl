@@ -567,64 +567,6 @@ plot(H_c, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
 # %% [markdown]
 # ## Getting connected set:
 
-# Getting connected set:
-
-function individualDeterministicTransitionMatrix(df,ii)
-
-    nfirms = length(unique(df.j))
-    shift_i = @chain df begin
-                        subset(:i => ByRow(.==(ii)))
-                        sort(:t)
-                        combine(first, groupby(_,:spell))
-                    end
-    
-    nshifts = size(shift_i)[1]
-    transitionMatrix_i = zeros(Int32, nfirms, nfirms);
-    
-    for ii in 1:nshifts
-        if ii != nshifts
-            current = shift_i.j[ii]
-            next = shift_i.j[ii+1]
-            transitionMatrix_i[current,next] = 1
-        end
-    end
-
-    return transitionMatrix_i
-end
-
-
-function getConnectedDataSet(df)
-
-    # Add all shifts happening in the economy during the whole time
-    nfirms = length(unique(df.j))
-
-    totalDeterministicShifts = zeros(nfirms, nfirms);
-
-    for ii in unique(df.i)
-        totalDeterministicShifts = totalDeterministicShifts + individualDeterministicTransitionMatrix(df,ii)
-    end
-
-    adjacencyMatrix = (UpperTriangular(totalDeterministicShifts) + transpose(LowerTriangular(totalDeterministicShifts))).>1
-    
-    adjacencyMatrix = adjacencyMatrix + transpose(adjacencyMatrix)
-
-    println("There are $(sum(totalDeterministicShifts)) job shifts across time ...")
-    
-    println("There are $(sum(adjacencyMatrix)) edges between nodes ...")
-
-    simpleGraph = SimpleGraph(adjacencyMatrix);
-
-    connectedNetwork = connected_components(simpleGraph)
-    
-    connectedSet = connectedNetwork[1]
-
-    println("We have only $(length(connectedSet)) firms fully connected $(length(connectedSet)/nfirms) of the market...") # Double check we might be wrong...
-
-    df_connected = df[in(connectedSet).(df.j),:]
-    println("Due to unconnectedness we eliminated $(size(df)[1]-size(df_connected)[1]) observations, not much")
-    return df_connected, adjacencyMatrix
-
-end
 
 # %% AKM Estimation:
 
