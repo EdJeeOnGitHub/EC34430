@@ -156,6 +156,8 @@ using DataFramesMeta
 
 #Number of workers in the firm:
 
+df,G,H = data_generating_process(α_sd,ψ_sd,csort,csig, w_sigma);
+
 crossSectionMean = @chain df begin
     groupby([:j, :t])
     combine(nrow => :count)
@@ -382,15 +384,86 @@ println("There are $(sum(totalDeterministicShifts)) job shifts across time ...")
 println("There are $(sum(adjacencyMatrix)) edges between nodes ...")
 
 simpleGraph = SimpleGraph(adjacencyMatrix);
-connectedNetwork = connected_components(g)
+connectedNetwork = connected_components(simpleGraph)
 connectedSet = connectedNetwork[1]
 
-println("We have only $(length(connectedSet)) firms fully connected ...") # Double check we might be wrong...
+
+println("We have only $(length(connectedSet)) firms fully connected $(length(connectedSet)/nfirms) of the market...") # Double check we might be wrong...
 
 df_connected = df[in(connectedSet).(df.j),:]
 println("Due to unconnectedness we eliminated $(size(df)[1]-size(df_connected)[1]) observations, not much")
 
 
+# Estimate AKM model:
+"""
+This part of the problem set is for you to implement the AKM estimator. 
+    As discussed in class, this can be done simply by updating, in turn, 
+    the worker FE and the firm FE.
+
+    Start by appending 2 new columns `alpha_hat` and `psi_hat` to your data. 
+    Then loop over the following:
+    
+    1. Update `alpha_hat` by taking the mean within `i` net of firm FE
+    2. Update `psi_hat` by taking the mean within `fid` net of worker FE
+    
+    Question 7:
+    
+     - Run the previous steps in a loop, and at each step evaluate how much 
+     the total mean square error has changed. 
+     Check that is goes down with every step. 
+     Stop when the MSE decreases by less than 1e-9.
+    
+    
+    Note that you can increase speed by focusing on movers only first.
+"""
 #--------------------------------------------------------------------------------------
+
+Pkg.add("FixedEffectModels")
+using FixedEffectModels
+
+df_connected = df[in(connectedSet).(df.j),:]
+df_connected[:,:alpha_hat] .= .0;
+df_connected[:,:psi_hat] .= .0;
+
+# Compute firm type fixed effects ols model: 
+delta = Inf
+tol = 0.00001
+nIter = 1 
+msePast = 0
+while delta>tol 
+
+    if nIter == 1
+        # Regress controling for industry fixed effects...
+        model_j = reg(df_connected, term(:lw) ~ fe(:j), save=true);
+        # Obtain residuals (which are controled by industry fe):
+        df_connected[:,:alpha_hat] = residuals(model_j);
+    else
+        # Just obtain the alpha parameters (not averaged) by netting out psi_hat from prev iter.
+        df_connected[:,:alpha_hat] = df_connected[:,:lw] - df_connected[:,:psi_hat]
+    end
+
+    # Average fixed effects by individual:
+    df_connected = transform(groupby(df_connected, :i), :alpha_hat => mean => :alpha_hat)
+
+    # Net out individual fixed effects
+    df_connected[:,:psi_hat] = df_connected[:,:lw] - df_connected[:,:alpha_hat]
+
+    # Compute average industry fixed effects
+    df_connected = transform(groupby(df_connected, :j), :psi_hat => mean => :psi_hat)
+
+    # Model verification
+    model_verify = reg(df_connected, @formula(lw ~ alpha_hat + psi_hat), save=true);
+
+    # Compute residuals and mse
+    delta = abs(msePast - sum(residuals(model_verify, df_connected).^2)) 
+
+    msePast = sum(residuals(model_verify, df_connected).^2) 
+
+    # Add count
+    nIter = nIter + 1
+
+    println("At iteration number $(nIter), the MSE is $(delta)")
+
+end
 
 

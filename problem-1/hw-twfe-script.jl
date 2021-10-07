@@ -660,6 +660,58 @@ df_connected = df[in(connectedSet).(df.j),:]
 println("Due to unconnectedness we eliminated $(size(df)[1]-size(df_connected)[1]) observations, not much")
 
 
+# %% AKM Estimation:
+
+Pkg.add("FixedEffectModels")
+using FixedEffectModels
+
+df_connected = df[in(connectedSet).(df.j),:]
+df_connected[:,:alpha_hat] .= .0;
+df_connected[:,:psi_hat] .= .0;
+
+# Compute firm type fixed effects ols model: 
+delta = Inf
+tol = 0.00001
+nIter = 1 
+msePast = 0
+while delta>tol 
+
+    if nIter == 1
+        # Regress controling for industry fixed effects...
+        model_j = reg(df_connected, term(:lw) ~ fe(:j), save=true);
+        # Obtain residuals (which are controled by industry fe):
+        df_connected[:,:alpha_hat] = residuals(model_j);
+    else
+        # Just obtain the alpha parameters (not averaged) by netting out psi_hat from prev iter.
+        df_connected[:,:alpha_hat] = df_connected[:,:lw] - df_connected[:,:psi_hat]
+    end
+
+    # Average fixed effects by individual:
+    df_connected = transform(groupby(df_connected, :i), :alpha_hat => mean => :alpha_hat)
+
+    # Net out individual fixed effects
+    df_connected[:,:psi_hat] = df_connected[:,:lw] - df_connected[:,:alpha_hat]
+
+    # Compute average industry fixed effects
+    df_connected = transform(groupby(df_connected, :j), :psi_hat => mean => :psi_hat)
+
+    # Model verification
+    model_verify = reg(df_connected, @formula(lw ~ alpha_hat + psi_hat), save=true);
+
+    # Compute residuals and mse
+    delta = abs(msePast - sum(residuals(model_verify, df_connected).^2)) 
+
+    msePast = sum(residuals(model_verify, df_connected).^2) 
+
+    # Add count
+    nIter = nIter + 1
+
+    println("At iteration number $(nIter), the MSE is $(delta)")
+
+end
+
+# %%
+
 # %% [markdown]
 # This requires first extracting the large set of firms connected by movers, and then estimating the linear problem with many dummies.
 # %% [markdown]
