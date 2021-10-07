@@ -466,7 +466,7 @@ eventStudySwitchersUp = broadcast(
     [1, 2, 3, 4]
 )
 plot(1:4,eventStudySwitchersDown, label=["1 to 1" "1 to 2" "1 to 3" "1 to 4"],markershape = :square)
-plot!(1:4,eventStudySwitchersUp,label =  ["4 to 1 " "4 to 2" "4 to 3" "4 to 4"],markershape = :circle)
+plot!(1:4,eventStudySwitchersUp, label =  ["4 to 1 " "4 to 2" "4 to 3" "4 to 4"],markershape = :circle)
 plot!(legend=:outertopright)
 
 # %% [markdown]
@@ -773,7 +773,7 @@ df_connected_results = akm_estimation(df_connected);
 
 λ_list = [0.1 0.2 0.3 0.4 0.5 0.6]
 
-nt_list = [5 6 8 10 15]
+nt_list = [8 10 15 20]
 
 store_fixed_effects_true = zeros(Float64 ,length(λ_list),length(nt_list))
 
@@ -815,10 +815,20 @@ for λ in λ_list
 
 end
 
-# Not sure if true_parameters variance is computed as it should ...
-plot(1:5, transpose(store_fixed_effects_true), markershape = :square, ylims=(0.25,0.35)) 
-plot!(1:5, transpose(store_fixed_effects_estimated), markershape = :circle, ylims=(0.25,0.35)) 
+# Figure seems ok, increasing t reduces bias due to few mobility ...
+# Increasing mobility sort of tackles the issue when t low...
+# Remove first two samples are distorting the figure
 
+plot(1:4, transpose(store_fixed_effects_true), 
+            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
+            markershape = :square, 
+            ylims=(0.2,0.35)) 
+plot!(1:4, transpose(store_fixed_effects_estimated),
+            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"],  
+            markershape = :circle, 
+            linetype=:scatter,
+            ylims=(0.2,0.35))
+plot!(legend=:outertopright)
 
 
 # %%
