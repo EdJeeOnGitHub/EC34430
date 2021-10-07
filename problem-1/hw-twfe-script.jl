@@ -53,28 +53,36 @@ using CategoricalArrays
 # We are going to model the mobility between workers and firms. Given a transition matrix we can solve for a stationary distribution, and then construct our panel from there.
 
 # %%
-α_sd = 1
-ψ_sd = 1
+struct parameters
+    α_sd::Float64 # indiv std
+    ψ_sd::Float64 # firm sd
+    csort::Float64 # sorting
+    cnetw::Float64 # network
+    csig::Float64 # cross sectional sd
+    w_sigma::Float64
+end
 
+struct hyper_parameters
+    nk::Int # firm types
+    nl::Int # worker types
+    λ::Float64 # moving prob
+    nt::Int # time period
+    ni::Int # n indiv
+end
 
-csort = 0.5 # Sorting effect
-csig  = 0.5 # Cross-sectional standard deviation
-w_sigma = 0.2
+# %%
 
+function gen_transition_matrix(params::parameters, hyper_params::hyper_parameters)
+    # setting params
+    α_sd = params.α_sd
+    ψ_sd = params.ψ_sd 
+    csort = params.csort
+    cnetw = params.cnetw
+    csig = params.csig
 
-function data_generating_process(α_sd,
-                                ψ_sd,
-                                csort, 
-                                csig,
-                                w_sigma,
-                                nk = 30,
-                                nl = 10,
-                                λ = 0.1)
+    nk = hyper_params.nk
+    nl = hyper_params.nl
 
-    cnetw = 0.2 # Network effect
-
-
-    # Let's assume moving probability is fixed
 
     # approximate each distribution with some points of support
     ψ = quantile.(Normal(), (1:nk) / (nk + 1)) * ψ_sd
@@ -97,16 +105,25 @@ function data_generating_process(α_sd,
             H[l, :] = M * H[l, :]
         end
     end
+    return α, ψ, G, H
+end
 
-    # p1 = plot(G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
-    # p2 = plot(G[nl, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
-    # plot(p1, p2, layout = (1, 2), size=[600,300])
 
-    #--------------------------------------------------------------
 
-    nt = 10
-    ni = 10000
-
+function gen_dataset(
+    hyper_params::hyper_parameters,
+    α::Array{Float64, 1},
+    ψ::Array{Float64, 1},
+    G::Array{Float64, 3},
+    H::Array{Float64, 2}
+)
+    # setting params
+    nk = hyper_params.nk
+    nl = hyper_params.nl
+    ni = hyper_params.ni
+    nt = hyper_params.nt
+    λ = hyper_params.λ
+    
     # We simulate a balanced panel
     ll = zeros(Int64, ni, nt) # Worker type
     kk = zeros(Int64, ni, nt) # Firm type
@@ -176,14 +193,37 @@ function data_generating_process(α_sd,
     tt = repeat((1:nt)',ni,1)
     df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
 
-    return df, G, H
-
+    return df
+    
 end
 
-nl = 10
-nk = 30
-λ = 0.1
-df, G, H = data_generating_process(α_sd, ψ_sd, csort, csig, w_sigma, nk, nl, λ)
+
+# %%
+
+
+# %%
+
+initial_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
+initial_hyper_params = hyper_parameters(30, 10, 0.1, 10, 10_000)
+α, ψ, G, H = gen_transition_matrix(initial_params, initial_hyper_params)
+
+
+# # %%
+
+
+# p1 = plot(G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
+# p2 = plot(G[initial_hyper_params.nl, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
+# plot(p1, p2, layout = (1, 2), size=[600,300])
+
+# %%
+
+df = gen_dataset(
+    initial_hyper_params,
+    α,
+    ψ,
+    G,
+    H
+)
 
 p1 = plot(G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
 p2 = plot(G[end, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
@@ -209,78 +249,9 @@ plot(H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
 # 
 # The next step is to simulate our network given our transition rules.
 
-# Not needed due to function
-# %%
-# nt = 10
-# ni = 10000
-
-# # We simulate a balanced panel
-# ll = zeros(Int64, ni, nt) # Worker type
-# kk = zeros(Int64, ni, nt) # Firm type
-# spellcount = zeros(Int64, ni, nt) # Employment spell
-
-# for i in 1:ni
-    
-#     # We draw the worker type
-#     l = rand(1:nl)
-#     ll[i,:] .= l
-    
-#     # At time 1, we draw from H
-#     kk[i,1] = sample(1:nk, Weights(H[l, :]))
-    
-#     for t in 2:nt
-#         if rand() < λ
-#             kk[i,t] = sample(1:nk, Weights(G[l, kk[i,t-1], :]))
-#             spellcount[i,t] = spellcount[i,t-1] + 1
-#         else
-#             kk[i,t] = kk[i,t-1]
-#             spellcount[i,t] = spellcount[i,t-1]
-#         end
-#     end
-    
-# end
 
 # # %% [markdown]
 # # ### Attach firm ids to types
-# # 
-# # The final step is to assign identities to the firms. We are going to do this is a relatively simple way, by simply randomly assigning firm ids to spells.
-
-# # %%
-# firms_per_type = 15
-# jj = zeros(Int64, ni, nt) # Firm identifiers
-
-# draw_firm_from_type(k) = sample(1:firms_per_type) + (k - 1) * firms_per_type
-
-# for i in 1:ni
-    
-#     # extract firm type
-#     k = kk[i,1]
-    
-#     # We draw the firm (one of firms_per_type in given group)
-#     jj[i,1] = draw_firm_from_type(k)
-    
-#     for t in 2:nt
-#         if spellcount[i,t] == spellcount[i,t-1]
-#             # We keep the firm the same
-#             jj[i,t] = jj[i,t-1]
-#         else
-#             # We draw a new firm
-#             k = kk[i,t]
-            
-#             new_j = draw_firm_from_type(k)            
-#             # Make sure the new firm is actually new
-#             while new_j == jj[i,t-1]
-#                 new_j = draw_firm_from_type(k)
-#             end
-            
-#             jj[i,t] = new_j
-#         end
-#     end
-# end
-# # Make sure firm ids are contiguous
-# contiguous_ids = Dict( unique(jj) .=> 1:length(unique(jj))  )
-# jj .= getindex.(Ref(contiguous_ids),jj);
-
 # %% [markdown]
 # <span style="color:green">Question 2</span>
 # 
@@ -304,10 +275,6 @@ plot(H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
 # 
 # 
 
-# %%
-# ii = repeat(1:ni,1,nt)
-# tt = repeat((1:nt)',ni,1)
-# df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
 
 # %% [markdown]
 # <span style="color:green">Question 3</span>
@@ -506,18 +473,47 @@ plot!(legend=:outertopright)
 
 # %%
 # Function to compute variance decomposition...
-function variance_decomposition(df)
-    varianceDecomposition =  @chain df begin
-        groupby([:k]) # Group by firm type 
-        combine(:α => mean, :ψ => mean)
-    end
+function variance_calibration(params::parameters, hyper_params::hyper_parameters)
+    α, ψ, G, H = gen_transition_matrix(params, hyper_params)
+    df = gen_dataset(
+        hyper_params,
+        α,
+        ψ,
+        G,
+        H
+    )
 
-    std_α = std(varianceDecomposition.α_mean)
-    std_ψ = std(varianceDecomposition.ψ_mean)
-    std_αψ = cor(varianceDecomposition.α_mean,varianceDecomposition.ψ_mean)
+    df[!, :lw] = df.α + df.ψ + params.w_sigma * rand(Normal(), size(df)[1])
 
-    return [std_α std_ψ std_αψ]
+    sig_α = var(df.α)
+    sig_ψ = var(df.ψ)
+    sig_αψ = 2*cov(df.α, df.ψ)
+    sig_lw = var(df.lw)
+
+    return [sig_α, sig_ψ, sig_αψ, sig_lw]
+
 end
+
+function anon_function(param_list)
+    # param_list = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    params = parameters(param_list...)
+    values = variance_calibration(params, initial_hyper_params)
+    target = [0.137, 0.084, 0.025, 0.003]
+    mse = mean((target .- values).^2)
+    return mse
+end
+
+
+    
+# %%
+using Optim
+results = Optim.optimize(
+    anon_function,
+    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+)
+
+
+
 # %%
 # Compute grid search where parameter lists are evenly spaced by gap
 gap = 0.20
@@ -536,8 +532,9 @@ jj = 1
 true_var_decomp = [0.186 0.101 0.110]
 difference_outcome = []
 
-
+Pkg.add("Optim")
 using Optim
+
 # don't want negative variances but neg sorting ok
 lower_bound = [0, 0, -1, 0, 0]
 upper_bound = [10, 10, 10, 10, 10]
@@ -557,11 +554,22 @@ results = optimize(
     # upper_bound,
     [0.5, 0.5, 1, 0.5, 0.5],
     Optim.Options(
-        iterations = 10_000
+        iterations = 1_000
     )
 )
 summary(results)
 Optim.minimizer(results)
+
+
+
+df, G, H = data_generating_process(
+    Optim.minimizer(results)[1],
+    Optim.minimizer(results)[2],
+    Optim.minimizer(results)[3],
+    Optim.minimizer(results)[4],
+    Optim.minimizer(results)[5]
+)
+
 
 #Apply grid search, this can be optimized for sure...
 for jj in 1:length(grid_points)
@@ -586,7 +594,7 @@ p2 = plot(G[nl, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl,
 plot(p1, p2, layout = (1, 2), size=[600,300])
 
 plot(H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
-
+unique(df.ψ)
 
 # The output reduces cross sectional variance too much, check what happens when ↑ csig ...
 df, G, H  = data_generating_process(α_sd,ψ_sd,csort, .1, w_sigma);
