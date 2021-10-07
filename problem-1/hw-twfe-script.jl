@@ -760,7 +760,7 @@ initial_hyper_params = hyper_parameters(30, 10, 0.1, 10, 10_000)
 
 α, ψ, G, H = gen_transition_matrix(initial_params, initial_hyper_params)
 
-df = gen_dataset( initial_hyper_params,α,ψ,G,H)
+df = gen_dataset(initial_hyper_params,α,ψ,G,H)
 
 df_connected = getConnectedDataSet(df);
 
@@ -775,13 +775,45 @@ df_connected_results = akm_estimation(df_connected);
 
 nt_list = [5 6 8 10 15]
 
-df,_,_ = data_generating_process(α_sd, ψ_sd, csort, csig, w_sigma, λ, nt);
+store_fixed_effects_true = zeros(Float64 ,length(λ_list),length(nt_list))
 
-df_connected = getConnectedDataSet(df)
+store_fixed_effects_estimated = zeros(Float64 ,length(λ_list),length(nt_list))
 
-df_connected_results = akm_estimation(df_connected)
+ii = 1
+jj = 1
 
-variance_decomposition(df_connected_results, false)
+for λ in λ_list
+
+    for nt in nt_list
+       
+        initial_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
+
+        initial_hyper_params = hyper_parameters(30, 10, λ, nt, 10_000) # gen data changing λ and nt
+        
+        α, ψ, G, H = gen_transition_matrix(initial_params, initial_hyper_params)
+        
+        df = gen_dataset(initial_hyper_params,α,ψ,G,H)
+        
+        df_connected = getConnectedDataSet(df)
+
+        df_connected_results = akm_estimation(df_connected)
+
+        var_firm_fe_true = variance_decomposition(df_connected_results, true)[2]
+
+        var_firm_fe_estimated = variance_decomposition(df_connected_results, false)[2]
+
+    end
+
+    store_fixed_effects_true[ii,jj] = var_firm_fe_true 
+
+    store_fixed_effects_estimated[ii,jj] = var_firm_fe_estimated
+
+    ii += 1
+    jj += 1    
+
+end
+
+
 
 # %%
 
