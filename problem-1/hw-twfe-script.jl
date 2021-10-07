@@ -29,6 +29,7 @@ Pkg.add(["DataFrames","DataFramesMeta","Chain"])
 Pkg.add("Plots")
 Pkg.add("CategoricalArrays")
 Pkg.add("LightGraphs")
+Pkg.add("Optim")
 Pkg.add("FixedEffectModels")
 
 # past the first time, you only need to instanciate the current folder
