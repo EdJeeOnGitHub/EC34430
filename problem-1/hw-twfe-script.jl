@@ -481,7 +481,10 @@ function generateEventStudy(eventStudyPanel, initial, final)
 end
 
 
-eventStudySwitchersDown = broadcast(x -> generateEventStudy(eventStudyPanel, 1, x).lw_mean, [1, 2, 3, 4])
+eventStudySwitchersDown = broadcast(
+    x -> generateEventStudy(eventStudyPanel, 1, x).lw_mean, 
+    [1, 2, 3, 4]
+)
 eventStudySwitchersUp = broadcast(
     x -> generateEventStudy(eventStudyPanel, 4, x).lw_mean,
     [1, 2, 3, 4]
@@ -501,130 +504,11 @@ plot!(legend=:outertopright)
 # Generate function for data generating process, including as arguments parameters
 # we want to calibrate:
 
-function data_generating_process(α_sd,
-                                ψ_sd,
-                                csort, 
-                                csig,
-                                w_sigma)
-
-    cnetw = 0.2 # Network effect
-
-    nk = 30
-    nl = 10
-
-    # Let's assume moving probability is fixed
-    λ = 0.1
-
-    # approximate each distribution with some points of support
-    ψ = quantile.(Normal(), (1:nk) / (nk + 1)) * α_sd
-    α = quantile.(Normal(), (1:nl) / (nl + 1)) * ψ_sd
-
-    # Let's create type-specific transition matrices
-    # We are going to use joint normals centered on different values
-    G = zeros(nl, nk, nk)
-    for l in 1:nl, k in 1:nk
-        G[l, k, :] = pdf( Normal(0, csig), ψ .- cnetw * ψ[k] .- csort * α[l])
-        G[l, k, :] = G[l, k, :] ./ sum(G[l, k, :])
-    end
-
-    # We then solve for the stationary distribution over psis for each alpha value
-    # We apply a crude fixed point approach
-    H = ones(nl, nk) ./ nk
-    for l in 1:nl
-        M = transpose(G[l, :, :])
-        for i in 1:100
-            H[l, :] = M * H[l, :]
-        end
-    end
-
-    # p1 = plot(G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
-    # p2 = plot(G[nl, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
-    # plot(p1, p2, layout = (1, 2), size=[600,300])
-
-    #--------------------------------------------------------------
-
-    nt = 10
-    ni = 10000
-
-    # We simulate a balanced panel
-    ll = zeros(Int64, ni, nt) # Worker type
-    kk = zeros(Int64, ni, nt) # Firm type
-    spellcount = zeros(Int64, ni, nt) # Employment spell
-
-    for i in 1:ni
-        
-        # We draw the worker type
-        l = rand(1:nl)
-        ll[i,:] .= l
-        
-        # At time 1, we draw from H
-        kk[i,1] = sample(1:nk, Weights(H[l, :]))
-        
-        for t in 2:nt
-            if rand() < λ
-                kk[i,t] = sample(1:nk, Weights(G[l, kk[i,t-1], :]))
-                spellcount[i,t] = spellcount[i,t-1] + 1
-            else
-                kk[i,t] = kk[i,t-1]
-                spellcount[i,t] = spellcount[i,t-1]
-            end
-        end
-        
-    end
-
-    #------------------------------------------------------------
-
-    firms_per_type = 15
-    jj = zeros(Int64, ni, nt) # Firm identifiers
-
-    draw_firm_from_type(k) = sample(1:firms_per_type) + (k - 1) * firms_per_type
-
-    for i in 1:ni
-        
-        # extract firm type
-        k = kk[i,1]
-        
-        # We draw the firm (one of firms_per_type in given group)
-        jj[i,1] = draw_firm_from_type(k)
-        
-        for t in 2:nt
-            if spellcount[i,t] == spellcount[i,t-1]
-                # We keep the firm the same
-                jj[i,t] = jj[i,t-1]
-            else
-                # We draw a new firm
-                k = kk[i,t]
-                
-                new_j = draw_firm_from_type(k)            
-                # Make sure the new firm is actually new
-                while new_j == jj[i,t-1]
-                    new_j = draw_firm_from_type(k)
-                end
-                
-                jj[i,t] = new_j
-            end
-        end
-    end
-    # Make sure firm ids are contiguous
-    contiguous_ids = Dict( unique(jj) .=> 1:length(unique(jj))  )
-    jj .= getindex.(Ref(contiguous_ids),jj);
-
-    #----------------------------------------------------------------------------------------
-
-    ii = repeat(1:ni,1,nt)
-    tt = repeat((1:nt)',ni,1)
-    df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
-
-    return df, G, H
-
-end
-
-
 # %%
 # Function to compute variance decomposition...
 function variance_decomposition(df)
     varianceDecomposition =  @chain df begin
-        groupby([:k]) # Group by firm and time 
+        groupby([:k]) # Group by firm type 
         combine(:α => mean, :ψ => mean)
     end
 
@@ -693,6 +577,63 @@ plot(p1, p2, layout = (1, 2), size=[600,300])
 
 # %% [markdown]
 # ## Estimating two-way fixed effects
+
+# Estimating two way fixed effects ... 
+Pkg.add("LightGraphs")
+Pkg.add("TikzGraphs")
+
+
+using LightGraphs
+using TikzGraphs
+
+# First create a matrix [NxT, nFirms, nFirms ] indicating  where each single individual is going...
+nfirms = length(unique(df.j))
+
+function individualDeterministicTransitionMatrix(df,ii)
+
+    nfirms = length(unique(df.j))
+    shift_i = @chain df begin
+                        subset(:i => ByRow(.==(ii)))
+                        sort(:t)
+                        combine(first, groupby(_,:spell))
+                    end
+    
+    nshifts = size(shift_i)[1]
+    transitionMatrix_i = zeros(Int32, nfirms, nfirms);
+    
+    for ii in 1:nshifts
+        if ii != nshifts
+            current = shift_i.j[ii]
+            next = shift_i.j[ii+1]
+            transitionMatrix_i[current,next] = 1
+        end
+    end
+
+    return transitionMatrix_i
+end
+
+# Add all shifts happening in the economy during the whole time
+totalDeterministicShifts = zeros(nfirms, nfirms);
+for ii in unique(df.i)
+    totalDeterministicShifts = totalDeterministicShifts + individualDeterministicTransitionMatrix(df,ii)
+end
+
+adjacencyMatrix = (UpperTriangular(totalDeterministicShifts) + transpose(LowerTriangular(totalDeterministicShifts))).>1
+adjacencyMatrix = adjacencyMatrix + transpose(adjacencyMatrix)
+
+println("There are $(sum(totalDeterministicShifts)) job shifts across time ...")
+println("There are $(sum(adjacencyMatrix)) edges between nodes ...")
+
+simpleGraph = SimpleGraph(adjacencyMatrix);
+connectedNetwork = connected_components(g)
+connectedSet = connectedNetwork[1]
+
+println("We have only $(length(connectedSet)) firms fully connected ...") # Double check we might be wrong...
+
+df_connected = df[in(connectedSet).(df.j),:]
+println("Due to unconnectedness we eliminated $(size(df)[1]-size(df_connected)[1]) observations, not much")
+
+
 # %% [markdown]
 # This requires first extracting the large set of firms connected by movers, and then estimating the linear problem with many dummies.
 # %% [markdown]
