@@ -501,27 +501,30 @@ function variance_calibration(params::parameters, hyper_params::hyper_parameters
 
 end
 
+# %%
 function anon_function(param_list)
-    # param_list = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
-    params = parameters(param_list...)
+    params = parameters(param_list[1], param_list[2], param_list[3], 0.2, param_list[4], param_list[5])
     values = variance_calibration(params, initial_hyper_params)
-    target = [0.137, 0.084, 0.025, 0.003]
+    target = [0.084, 0.025, 0.003, 0.137]
     mse = mean((target .- values).^2)
     return mse
 end
 
-
-    
 # %%
 using Optim
 results = Optim.optimize(
     anon_function,
-    [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    [1, 1, 0.01, 0.012, 0.015],
+    LBFGS()
 )
 
-
-
 # %%
+Optim.minimizer(results)
+# %%
+
+
+
+
 # Compute grid search where parameter lists are evenly spaced by gap
 gap = 0.20
 α_sd_list = 0.01:gap:1
