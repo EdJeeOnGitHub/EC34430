@@ -482,24 +482,36 @@ plot!(legend=:outertopright)
 
 # %%
 # Function to compute variance decomposition...
+
+function variance_decomposition(df, true_parameters=true)
+
+    if true_parameters == true
+        sig_α = var(df.α)
+        sig_ψ = var(df.ψ)
+        sig_αψ = 2*cov(df.α, df.ψ)
+        sig_lw = var(df.lw)
+    else
+        sig_α = var(df.α_hat)
+        sig_ψ = var(df.ψ_hat)
+        sig_αψ = 2*cov(df.α_hat, df.ψ_hat)
+        sig_lw = var(df.lw)
+    end
+
+
+    return [sig_α, sig_ψ, sig_αψ, sig_lw]
+
 function variance_calibration(params::parameters, hyper_params::hyper_parameters)
     α, ψ, G, H = gen_transition_matrix(params, hyper_params)
+    
     df = gen_dataset(
         hyper_params,
         α,
         ψ,
         G,
         H
-    )
+    )    
 
-    df[!, :lw] = df.α + df.ψ + params.w_sigma * rand(Normal(), size(df)[1])
-
-    sig_α = var(df.α)
-    sig_ψ = var(df.ψ)
-    sig_αψ = 2*cov(df.α, df.ψ)
-    sig_lw = var(df.lw)
-
-    return [sig_α, sig_ψ, sig_αψ, sig_lw]
+    return variance_decomposition(df, true)
 
 end
 
@@ -687,8 +699,8 @@ end
 
 function akm_estimation(df_connected)
 
-    df_connected[:,:alpha_hat] .= .0;
-    df_connected[:,:psi_hat] .= .0;
+    df_connected[:,:α_hat] .= .0;
+    df_connected[:,:ψ_hat] .= .0;
 
     # Compute firm type fixed effects ols model: 
     delta = Inf
@@ -701,23 +713,23 @@ function akm_estimation(df_connected)
             # Regress controling for industry fixed effects...
             model_j = reg(df_connected, term(:lw) ~ fe(:j), save=true);
             # Obtain residuals (which are controled by industry fe):
-            df_connected[:,:alpha_hat] = residuals(model_j);
+            df_connected[:,:α_hat] = residuals(model_j);
         else
             # Just obtain the alpha parameters (not averaged) by netting out psi_hat from prev iter.
-            df_connected[:,:alpha_hat] = df_connected[:,:lw] - df_connected[:,:psi_hat]
+            df_connected[:,:α_hat] = df_connected[:,:lw] - df_connected[:,:ψ_hat]
         end
 
         # Average fixed effects by individual:
-        df_connected = transform(groupby(df_connected, :i), :alpha_hat => mean => :alpha_hat)
+        df_connected = transform(groupby(df_connected, :i), :α_hat => mean => :α_hat)
 
         # Net out individual fixed effects
-        df_connected[:,:psi_hat] = df_connected[:,:lw] - df_connected[:,:alpha_hat]
+        df_connected[:,:ψ_hat] = df_connected[:,:lw] - df_connected[:,:α_hat]
 
         # Compute average industry fixed effects
-        df_connected = transform(groupby(df_connected, :j), :psi_hat => mean => :psi_hat)
+        df_connected = transform(groupby(df_connected, :j), :ψ_hat => mean => :ψ_hat)
 
         # Model verification
-        model_verify = reg(df_connected, @formula(lw ~ alpha_hat + psi_hat), save=true);
+        model_verify = reg(df_connected, @formula(lw ~ α_hat + ψ_hat), save=true);
 
         # Compute residuals and mse
         delta = abs(msePast - sum(residuals(model_verify, df_connected).^2)) 
@@ -738,7 +750,7 @@ end
 
 # %% 
 
-# Just found some minor issues with the connectedness of the economy, will make few changes in parameters here...
+# Re running the data generating process and computing akm estimation...
 
 initial_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
 
