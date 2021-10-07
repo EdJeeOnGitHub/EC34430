@@ -500,6 +500,8 @@ function variance_decomposition(df, true_parameters=true)
 
     return [sig_α, sig_ψ, sig_αψ, sig_lw]
 
+end
+
 function variance_calibration(params::parameters, hyper_params::hyper_parameters)
     α, ψ, G, H = gen_transition_matrix(params, hyper_params)
     
@@ -779,6 +781,7 @@ df_connected = getConnectedDataSet(df)
 
 df_connected_results = akm_estimation(df_connected)
 
+variance_decomposition(df_connected_results, false)
 
 # %%
 
