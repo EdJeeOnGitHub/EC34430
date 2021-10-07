@@ -77,8 +77,8 @@ function data_generating_process(α_sd,
     # Let's assume moving probability is fixed
 
     # approximate each distribution with some points of support
-    ψ = quantile.(Normal(), (1:nk) / (nk + 1)) * α_sd
-    α = quantile.(Normal(), (1:nl) / (nl + 1)) * ψ_sd
+    ψ = quantile.(Normal(), (1:nk) / (nk + 1)) * ψ_sd
+    α = quantile.(Normal(), (1:nl) / (nl + 1)) * α_sd
 
     # Let's create type-specific transition matrices
     # We are going to use joint normals centered on different values
@@ -528,12 +528,40 @@ csig_list  = 0.01:gap:1 # Cross-sectional standard deviation
 w_sigma_list = 0.01:gap:1
 
 flat_gridpoints(grids) = vec(collect(Iterators.product(grids...)))
+
 grid_points = flat_gridpoints((α_sd_list, ψ_sd_list, csort_list, csig_list,w_sigma_list));
 
 jj = 1
 
 true_var_decomp = [0.186 0.101 0.110]
 difference_outcome = []
+
+
+using Optim
+# don't want negative variances but neg sorting ok
+lower_bound = [0, 0, -1, 0, 0]
+upper_bound = [10, 10, 10, 10, 10]
+
+function search_function(inputs)
+    α_sd,ψ_sd,csort,csig, w_sigma = inputs
+    _,_,_,_, _ = grid_points[1]
+    df,_,_ = data_generating_process(α_sd,ψ_sd,csort,csig, w_sigma);
+    var_decomp = variance_decomposition(df)
+    euclidean_dist = sum((true_var_decomp-var_decomp).^2)
+    return euclidean_dist
+end
+# search_function([0.5, 0.5, 1, 0.5, 0.5])
+results = optimize(
+    search_function,
+    # lower_bound,
+    # upper_bound,
+    [0.5, 0.5, 1, 0.5, 0.5],
+    Optim.Options(
+        iterations = 10_000
+    )
+)
+summary(results)
+Optim.minimizer(results)
 
 #Apply grid search, this can be optimized for sure...
 for jj in 1:length(grid_points)
