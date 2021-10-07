@@ -183,7 +183,7 @@ end
 nl = 10
 nk = 30
 λ = 0.1
-df, G, H = data_generating_process(α_sd, ψ_sd, csort, csig, w_sigma, nl, nk, λ)
+df, G, H = data_generating_process(α_sd, ψ_sd, csort, csig, w_sigma, nk, nl, λ)
 
 p1 = plot(G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
 p2 = plot(G[end, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
@@ -209,76 +209,77 @@ plot(H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
 # 
 # The next step is to simulate our network given our transition rules.
 
+# Not needed due to function
 # %%
-nt = 10
-ni = 10000
+# nt = 10
+# ni = 10000
 
-# We simulate a balanced panel
-ll = zeros(Int64, ni, nt) # Worker type
-kk = zeros(Int64, ni, nt) # Firm type
-spellcount = zeros(Int64, ni, nt) # Employment spell
+# # We simulate a balanced panel
+# ll = zeros(Int64, ni, nt) # Worker type
+# kk = zeros(Int64, ni, nt) # Firm type
+# spellcount = zeros(Int64, ni, nt) # Employment spell
 
-for i in 1:ni
+# for i in 1:ni
     
-    # We draw the worker type
-    l = rand(1:nl)
-    ll[i,:] .= l
+#     # We draw the worker type
+#     l = rand(1:nl)
+#     ll[i,:] .= l
     
-    # At time 1, we draw from H
-    kk[i,1] = sample(1:nk, Weights(H[l, :]))
+#     # At time 1, we draw from H
+#     kk[i,1] = sample(1:nk, Weights(H[l, :]))
     
-    for t in 2:nt
-        if rand() < λ
-            kk[i,t] = sample(1:nk, Weights(G[l, kk[i,t-1], :]))
-            spellcount[i,t] = spellcount[i,t-1] + 1
-        else
-            kk[i,t] = kk[i,t-1]
-            spellcount[i,t] = spellcount[i,t-1]
-        end
-    end
+#     for t in 2:nt
+#         if rand() < λ
+#             kk[i,t] = sample(1:nk, Weights(G[l, kk[i,t-1], :]))
+#             spellcount[i,t] = spellcount[i,t-1] + 1
+#         else
+#             kk[i,t] = kk[i,t-1]
+#             spellcount[i,t] = spellcount[i,t-1]
+#         end
+#     end
     
-end
+# end
 
-# %% [markdown]
-# ### Attach firm ids to types
-# 
-# The final step is to assign identities to the firms. We are going to do this is a relatively simple way, by simply randomly assigning firm ids to spells.
+# # %% [markdown]
+# # ### Attach firm ids to types
+# # 
+# # The final step is to assign identities to the firms. We are going to do this is a relatively simple way, by simply randomly assigning firm ids to spells.
 
-# %%
-firms_per_type = 15
-jj = zeros(Int64, ni, nt) # Firm identifiers
+# # %%
+# firms_per_type = 15
+# jj = zeros(Int64, ni, nt) # Firm identifiers
 
-draw_firm_from_type(k) = sample(1:firms_per_type) + (k - 1) * firms_per_type
+# draw_firm_from_type(k) = sample(1:firms_per_type) + (k - 1) * firms_per_type
 
-for i in 1:ni
+# for i in 1:ni
     
-    # extract firm type
-    k = kk[i,1]
+#     # extract firm type
+#     k = kk[i,1]
     
-    # We draw the firm (one of firms_per_type in given group)
-    jj[i,1] = draw_firm_from_type(k)
+#     # We draw the firm (one of firms_per_type in given group)
+#     jj[i,1] = draw_firm_from_type(k)
     
-    for t in 2:nt
-        if spellcount[i,t] == spellcount[i,t-1]
-            # We keep the firm the same
-            jj[i,t] = jj[i,t-1]
-        else
-            # We draw a new firm
-            k = kk[i,t]
+#     for t in 2:nt
+#         if spellcount[i,t] == spellcount[i,t-1]
+#             # We keep the firm the same
+#             jj[i,t] = jj[i,t-1]
+#         else
+#             # We draw a new firm
+#             k = kk[i,t]
             
-            new_j = draw_firm_from_type(k)            
-            # Make sure the new firm is actually new
-            while new_j == jj[i,t-1]
-                new_j = draw_firm_from_type(k)
-            end
+#             new_j = draw_firm_from_type(k)            
+#             # Make sure the new firm is actually new
+#             while new_j == jj[i,t-1]
+#                 new_j = draw_firm_from_type(k)
+#             end
             
-            jj[i,t] = new_j
-        end
-    end
-end
-# Make sure firm ids are contiguous
-contiguous_ids = Dict( unique(jj) .=> 1:length(unique(jj))  )
-jj .= getindex.(Ref(contiguous_ids),jj);
+#             jj[i,t] = new_j
+#         end
+#     end
+# end
+# # Make sure firm ids are contiguous
+# contiguous_ids = Dict( unique(jj) .=> 1:length(unique(jj))  )
+# jj .= getindex.(Ref(contiguous_ids),jj);
 
 # %% [markdown]
 # <span style="color:green">Question 2</span>
@@ -304,9 +305,9 @@ jj .= getindex.(Ref(contiguous_ids),jj);
 # 
 
 # %%
-ii = repeat(1:ni,1,nt)
-tt = repeat((1:nt)',ni,1)
-df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
+# ii = repeat(1:ni,1,nt)
+# tt = repeat((1:nt)',ni,1)
+# df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
 
 # %% [markdown]
 # <span style="color:green">Question 3</span>
@@ -425,7 +426,6 @@ function find_move_year(df, order, sort_id_1, sort_id_2, spell_var)
 end
 
 
-find_move_year(ed_panel, "forward", :i, :t, :spell)
 
 
 eventStudyPanel =  @chain df begin
