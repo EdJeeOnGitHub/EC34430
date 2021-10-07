@@ -514,12 +514,10 @@ function variance_decomposition(df)
 
     std_α = std(varianceDecomposition.α_mean)
     std_ψ = std(varianceDecomposition.ψ_mean)
-    std_αψ = cov(varianceDecomposition.α_mean,varianceDecomposition.ψ_mean)
+    std_αψ = cor(varianceDecomposition.α_mean,varianceDecomposition.ψ_mean)
 
     return [std_α std_ψ std_αψ]
 end
-
-
 # %%
 # Compute grid search where parameter lists are evenly spaced by gap
 gap = 0.20
