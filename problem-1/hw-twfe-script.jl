@@ -28,6 +28,8 @@ Pkg.add("StatsBase")
 Pkg.add(["DataFrames","DataFramesMeta","Chain"])
 Pkg.add("Plots")
 Pkg.add("CategoricalArrays")
+Pkg.add("LightGraphs")
+Pkg.add("FixedEffectModels")
 
 # past the first time, you only need to instanciate the current folder
 Pkg.instantiate(); # Updates packages given .toml file
@@ -42,6 +44,12 @@ using StatsBase
 using DataFrames
 using Plots
 using CategoricalArrays
+using FixedEffectModels
+using Chain
+using DataFramesMeta
+using LightGraphs
+using TikzGraphs
+using Optim
 
 # %% [markdown]
 # ## Constructing Employer-Employee matched data
@@ -319,8 +327,7 @@ plot(H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
 # 
 
 # %%
-using Chain
-using DataFramesMeta
+
 last(df, 500)
 
 
@@ -537,7 +544,6 @@ true_var_decomp = [0.186 0.101 0.110]
 difference_outcome = []
 
 
-using Optim
 # don't want negative variances but neg sorting ok
 lower_bound = [0, 0, -1, 0, 0]
 upper_bound = [10, 10, 10, 10, 10]
@@ -602,18 +608,9 @@ plot(p1, p2, layout = (1, 2), size=[600,300])
 # I'll leave it at 0.05 which is 5 times it optimal* value.
 
 # %% [markdown]
-# ## Estimating two-way fixed effects
+# ## Getting connected set:
 
-# Estimating two way fixed effects ... 
-Pkg.add("LightGraphs")
-Pkg.add("TikzGraphs")
-
-
-using LightGraphs
-using TikzGraphs
-
-# First create a matrix [NxT, nFirms, nFirms ] indicating  where each single individual is going...
-nfirms = length(unique(df.j))
+# Getting connected set:
 
 function individualDeterministicTransitionMatrix(df,ii)
 
@@ -638,77 +635,111 @@ function individualDeterministicTransitionMatrix(df,ii)
     return transitionMatrix_i
 end
 
-# Add all shifts happening in the economy during the whole time
-totalDeterministicShifts = zeros(nfirms, nfirms);
-for ii in unique(df.i)
-    totalDeterministicShifts = totalDeterministicShifts + individualDeterministicTransitionMatrix(df,ii)
+
+function getConnectedDataSet(df)
+
+    # Add all shifts happening in the economy during the whole time
+    nfirms = length(unique(df.j))
+
+    totalDeterministicShifts = zeros(nfirms, nfirms);
+
+    for ii in unique(df.i)
+        totalDeterministicShifts = totalDeterministicShifts + individualDeterministicTransitionMatrix(df,ii)
+    end
+
+    adjacencyMatrix = (UpperTriangular(totalDeterministicShifts) + transpose(LowerTriangular(totalDeterministicShifts))).>1
+    
+    adjacencyMatrix = adjacencyMatrix + transpose(adjacencyMatrix)
+
+    println("There are $(sum(totalDeterministicShifts)) job shifts across time ...")
+    
+    println("There are $(sum(adjacencyMatrix)) edges between nodes ...")
+
+    simpleGraph = SimpleGraph(adjacencyMatrix);
+
+    connectedNetwork = connected_components(simpleGraph)
+    
+    connectedSet = connectedNetwork[1]
+
+    println("We have only $(length(connectedSet)) firms fully connected $(length(connectedSet)/nfirms) of the market...") # Double check we might be wrong...
+
+    return df_connected = df[in(connectedSet).(df.j),:]
+    
+    println("Due to unconnectedness we eliminated $(size(df)[1]-size(df_connected)[1]) observations, not much")
+
 end
-
-adjacencyMatrix = (UpperTriangular(totalDeterministicShifts) + transpose(LowerTriangular(totalDeterministicShifts))).>1
-adjacencyMatrix = adjacencyMatrix + transpose(adjacencyMatrix)
-
-println("There are $(sum(totalDeterministicShifts)) job shifts across time ...")
-println("There are $(sum(adjacencyMatrix)) edges between nodes ...")
-
-simpleGraph = SimpleGraph(adjacencyMatrix);
-connectedNetwork = connected_components(g)
-connectedSet = connectedNetwork[1]
-
-println("We have only $(length(connectedSet)) firms fully connected ...") # Double check we might be wrong...
-
-df_connected = df[in(connectedSet).(df.j),:]
-println("Due to unconnectedness we eliminated $(size(df)[1]-size(df_connected)[1]) observations, not much")
-
 
 # %% AKM Estimation:
 
-Pkg.add("FixedEffectModels")
-using FixedEffectModels
+function akm_estimation(df_connected)
 
-df_connected = df[in(connectedSet).(df.j),:]
-df_connected[:,:alpha_hat] .= .0;
-df_connected[:,:psi_hat] .= .0;
+    df_connected[:,:alpha_hat] .= .0;
+    df_connected[:,:psi_hat] .= .0;
 
-# Compute firm type fixed effects ols model: 
-delta = Inf
-tol = 0.00001
-nIter = 1 
-msePast = 0
-while delta>tol 
+    # Compute firm type fixed effects ols model: 
+    delta = Inf
+    tol = 0.00001
+    nIter = 1 
+    msePast = 0
+    while delta>tol 
 
-    if nIter == 1
-        # Regress controling for industry fixed effects...
-        model_j = reg(df_connected, term(:lw) ~ fe(:j), save=true);
-        # Obtain residuals (which are controled by industry fe):
-        df_connected[:,:alpha_hat] = residuals(model_j);
-    else
-        # Just obtain the alpha parameters (not averaged) by netting out psi_hat from prev iter.
-        df_connected[:,:alpha_hat] = df_connected[:,:lw] - df_connected[:,:psi_hat]
+        if nIter == 1
+            # Regress controling for industry fixed effects...
+            model_j = reg(df_connected, term(:lw) ~ fe(:j), save=true);
+            # Obtain residuals (which are controled by industry fe):
+            df_connected[:,:alpha_hat] = residuals(model_j);
+        else
+            # Just obtain the alpha parameters (not averaged) by netting out psi_hat from prev iter.
+            df_connected[:,:alpha_hat] = df_connected[:,:lw] - df_connected[:,:psi_hat]
+        end
+
+        # Average fixed effects by individual:
+        df_connected = transform(groupby(df_connected, :i), :alpha_hat => mean => :alpha_hat)
+
+        # Net out individual fixed effects
+        df_connected[:,:psi_hat] = df_connected[:,:lw] - df_connected[:,:alpha_hat]
+
+        # Compute average industry fixed effects
+        df_connected = transform(groupby(df_connected, :j), :psi_hat => mean => :psi_hat)
+
+        # Model verification
+        model_verify = reg(df_connected, @formula(lw ~ alpha_hat + psi_hat), save=true);
+
+        # Compute residuals and mse
+        delta = abs(msePast - sum(residuals(model_verify, df_connected).^2)) 
+
+        msePast = sum(residuals(model_verify, df_connected).^2) 
+
+        # Add count
+        nIter = nIter + 1
+
+        println("At iteration number $(nIter), the MSE is $(delta)")
+
     end
-
-    # Average fixed effects by individual:
-    df_connected = transform(groupby(df_connected, :i), :alpha_hat => mean => :alpha_hat)
-
-    # Net out individual fixed effects
-    df_connected[:,:psi_hat] = df_connected[:,:lw] - df_connected[:,:alpha_hat]
-
-    # Compute average industry fixed effects
-    df_connected = transform(groupby(df_connected, :j), :psi_hat => mean => :psi_hat)
-
-    # Model verification
-    model_verify = reg(df_connected, @formula(lw ~ alpha_hat + psi_hat), save=true);
-
-    # Compute residuals and mse
-    delta = abs(msePast - sum(residuals(model_verify, df_connected).^2)) 
-
-    msePast = sum(residuals(model_verify, df_connected).^2) 
-
-    # Add count
-    nIter = nIter + 1
-
-    println("At iteration number $(nIter), the MSE is $(delta)")
-
+    
+    return df_connected
+    
 end
+
+df_connected = getConnectedDataSet(df)
+
+df_connected_results = akm_estimation(df_connected)
+
+# %%
+
+# Limited mobility bias:
+#---------------------------------------------------------------------
+
+λ_list = [0.1 0.2 0.3 0.4 0.5 0.6]
+
+nt_list = [5 6 8 10 15]
+
+df,_,_ = data_generating_process(α_sd, ψ_sd, csort, csig, w_sigma, λ, nt);
+
+df_connected = getConnectedDataSet(df)
+
+df_connected_results = akm_estimation(df_connected)
+
 
 # %%
 
