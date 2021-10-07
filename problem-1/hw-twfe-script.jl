@@ -779,10 +779,11 @@ store_fixed_effects_true = zeros(Float64 ,length(λ_list),length(nt_list))
 
 store_fixed_effects_estimated = zeros(Float64 ,length(λ_list),length(nt_list))
 
-ii = 1
-jj = 1
+ii = 1 # idx lambdas
 
 for λ in λ_list
+
+    jj = 1 # idx nt 
 
     for nt in nt_list
        
@@ -802,14 +803,15 @@ for λ in λ_list
 
         var_firm_fe_estimated = variance_decomposition(df_connected_results, false)[2]
 
+        store_fixed_effects_true[ii,jj] = var_firm_fe_true 
+
+        store_fixed_effects_estimated[ii,jj] = var_firm_fe_estimated    
+
+        jj += 1
+
     end
 
-    store_fixed_effects_true[ii,jj] = var_firm_fe_true 
-
-    store_fixed_effects_estimated[ii,jj] = var_firm_fe_estimated
-
     ii += 1
-    jj += 1    
 
 end
 
