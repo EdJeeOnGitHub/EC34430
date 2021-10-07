@@ -768,7 +768,7 @@ df_connected_results = akm_estimation(df_connected);
 
 # %%
 
-# Limited mobility bias:
+# Q8: Limited mobility bias
 #---------------------------------------------------------------------
 
 λ_list = [0.1 0.2 0.3 0.4 0.5 0.6]
@@ -820,7 +820,21 @@ plot(1:5, transpose(store_fixed_effects_true), markershape = :square, ylims=(0.2
 plot!(1:5, transpose(store_fixed_effects_estimated), markershape = :circle, ylims=(0.25,0.35)) 
 
 
+
 # %%
+# Q9: Correction of mobility bias:
+#---------------------------------------------------------------------
+
+
+
+
+# %%
+# Q10: Evidence of Learning:
+#---------------------------------------------------------------------
+
+
+
+
 
 # %% [markdown]
 # This requires first extracting the large set of firms connected by movers, and then estimating the linear problem with many dummies.
