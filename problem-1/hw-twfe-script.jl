@@ -131,7 +131,8 @@ function gen_dataset(
     ni = hyper_params.ni
     nt = hyper_params.nt
     λ = hyper_params.λ
-    
+    w_sigma = 0.2
+
     # We simulate a balanced panel
     ll = zeros(Int64, ni, nt) # Worker type
     kk = zeros(Int64, ni, nt) # Firm type
@@ -200,6 +201,9 @@ function gen_dataset(
     ii = repeat(1:ni,1,nt)
     tt = repeat((1:nt)',ni,1)
     df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
+    
+    df[!, :lw] = df.α + df.ψ + w_sigma * rand(Normal(), size(df)[1]);
+
 
     return df
     
@@ -360,8 +364,6 @@ end
 # We start with just AKM wages, which is log additive with some noise.
 
 # %%
-w_sigma = 0.2
-df[!, :lw] = df.α + df.ψ + w_sigma * rand(Normal(), size(df)[1]);
 
 # %% [markdown]
 # <span style="color:green">Question 4</span>
@@ -733,9 +735,22 @@ function akm_estimation(df_connected)
     
 end
 
-df_connected = getConnectedDataSet(df)
 
-df_connected_results = akm_estimation(df_connected)
+# %% 
+
+# Just found some minor issues with the connectedness of the economy, will make few changes in parameters here...
+
+initial_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
+
+initial_hyper_params = hyper_parameters(30, 10, 0.1, 10, 10_000)
+
+α, ψ, G, H = gen_transition_matrix(initial_params, initial_hyper_params)
+
+df = gen_dataset( initial_hyper_params,α,ψ,G,H)
+
+df_connected = getConnectedDataSet(df);
+
+df_connected_results = akm_estimation(df_connected);
 
 # %%
 
