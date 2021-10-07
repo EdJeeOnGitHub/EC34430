@@ -815,6 +815,9 @@ for λ in λ_list
 
 end
 
+# Not sure if true_parameters variance is computed as it should ...
+plot(1:5, transpose(store_fixed_effects_true), markershape = :square, ylims=(0.25,0.35)) 
+plot!(1:5, transpose(store_fixed_effects_estimated), markershape = :circle, ylims=(0.25,0.35)) 
 
 
 # %%
