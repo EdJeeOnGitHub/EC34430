@@ -34,7 +34,7 @@ Pkg.add("FixedEffectModels")
 Pkg.add("Flux")
 
 # past the first time, you only need to instanciate the current folder
-Pkg.instantiate(); # Updates packages given .toml file
+# Pkg.instantiate(); # Updates packages given .toml file
 
 # %% [markdown]
 # We then list our imports
@@ -50,7 +50,7 @@ using FixedEffectModels
 using Chain
 using DataFramesMeta
 using LightGraphs
-using TikzGraphs
+# using TikzGraphs
 using Optim
 
 
@@ -538,167 +538,37 @@ results = Optim.optimize(
 )
 
 # %%
-Optim.minimizer(results)
-# %%
-
-
-
-
-# Compute grid search where parameter lists are evenly spaced by gap
-gap = 0.20
-α_sd_list = 0.01:gap:1
-ψ_sd_list = 0.01:gap:1
-csort_list = 0.01:gap:1 # Sorting effect
-csig_list  = 0.01:gap:1 # Cross-sectional standard deviation
-w_sigma_list = 0.01:gap:1
-
-flat_gridpoints(grids) = vec(collect(Iterators.product(grids...)))
-
-grid_points = flat_gridpoints((α_sd_list, ψ_sd_list, csort_list, csig_list,w_sigma_list));
-
-jj = 1
-
-true_var_decomp = [0.186 0.101 0.110]
-difference_outcome = []
-
-Pkg.add("Optim")
-using Optim
-
-# don't want negative variances but neg sorting ok
-lower_bound = [0, 0, -1, 0, 0]
-upper_bound = [10, 10, 10, 10, 10]
-
-function search_function(inputs)
-    α_sd,ψ_sd,csort,csig, w_sigma = inputs
-    _,_,_,_, _ = grid_points[1]
-    df,_,_ = data_generating_process(α_sd,ψ_sd,csort,csig, w_sigma);
-    var_decomp = variance_decomposition(df)
-    euclidean_dist = sum((true_var_decomp-var_decomp).^2)
-    return euclidean_dist
-end
-# search_function([0.5, 0.5, 1, 0.5, 0.5])
-results = optimize(
-    search_function,
-    # lower_bound,
-    # upper_bound,
-    [0.5, 0.5, 1, 0.5, 0.5],
-    Optim.Options(
-        iterations = 1_000
-    )
-)
-summary(results)
-Optim.minimizer(results)
-
-
-
-df, G, H = data_generating_process(
+calibrated_params = parameters(
     Optim.minimizer(results)[1],
     Optim.minimizer(results)[2],
     Optim.minimizer(results)[3],
+    0.2,
     Optim.minimizer(results)[4],
-    Optim.minimizer(results)[5]
+    Optim.minimizer(results)[5],
 )
 
 
-#Apply grid search, this can be optimized for sure...
-for jj in 1:length(grid_points)
-    α_sd,ψ_sd,csort,csig, w_sigma = grid_points[jj]
-    df,_,_ = data_generating_process(α_sd,ψ_sd,csort,csig, w_sigma);
-    var_decomp = variance_decomposition(df)
-    euclidean_dist = sum((true_var_decomp-var_decomp).^2)
-    push!(difference_outcome, euclidean_dist)
-end
-
 
 # %%
-# Check results and tweak csig a bit...
-# Get index of minimum euclidean distance estimation:
-_, index_calibration = findmin(difference_outcome)
-α_sd,ψ_sd,csort,csig, w_sigma = grid_points[index_calibration]
-df, G, H  = data_generating_process(α_sd,ψ_sd,csort,csig, w_sigma);
+α_c, ψ_c, G_c, H_c  = gen_transition_matrix(calibrated_params, initial_hyper_params)
+df_calibrated = gen_dataset(initial_hyper_params, α_c, ψ_c, G_c, H_c)
 
 
-p1 = plot(G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
-p2 = plot(G[nl, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
+
+# %% [markdown]
+# Generating calibrated plots - these don't look totally convincing
+# %%
+
+p1 = plot(G_c[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
+p2 = plot(G_c[end, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
 plot(p1, p2, layout = (1, 2), size=[600,300])
+# %%
+plot(H_c, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
 
-plot(H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
-unique(df.ψ)
-
-# The output reduces cross sectional variance too much, check what happens when ↑ csig ...
-df, G, H  = data_generating_process(α_sd,ψ_sd,csort, .1, w_sigma);
-var_decomp = variance_decomposition(df)
-euclidean_dist = sum((true_var_decomp-var_decomp).^2)
-println("Euclidean distance is: $euclidean_dist")
-
-p1 = plot(G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
-p2 = plot(G[nl, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
-plot(p1, p2, layout = (1, 2), size=[600,300])
-
-# It seems csig contributes importantly to covariance! Check this again and get feedback from prof.
-# I'll leave it at 0.05 which is 5 times it optimal* value.
 
 # %% [markdown]
 # ## Getting connected set:
 
-# Getting connected set:
-
-function individualDeterministicTransitionMatrix(df,ii)
-
-    nfirms = length(unique(df.j))
-    shift_i = @chain df begin
-                        subset(:i => ByRow(.==(ii)))
-                        sort(:t)
-                        combine(first, groupby(_,:spell))
-                    end
-    
-    nshifts = size(shift_i)[1]
-    transitionMatrix_i = zeros(Int32, nfirms, nfirms);
-    
-    for ii in 1:nshifts
-        if ii != nshifts
-            current = shift_i.j[ii]
-            next = shift_i.j[ii+1]
-            transitionMatrix_i[current,next] = 1
-        end
-    end
-
-    return transitionMatrix_i
-end
-
-
-function getConnectedDataSet(df)
-
-    # Add all shifts happening in the economy during the whole time
-    nfirms = length(unique(df.j))
-
-    totalDeterministicShifts = zeros(nfirms, nfirms);
-
-    for ii in unique(df.i)
-        totalDeterministicShifts = totalDeterministicShifts + individualDeterministicTransitionMatrix(df,ii)
-    end
-
-    adjacencyMatrix = (UpperTriangular(totalDeterministicShifts) + transpose(LowerTriangular(totalDeterministicShifts))).>1
-    
-    adjacencyMatrix = adjacencyMatrix + transpose(adjacencyMatrix)
-
-    println("There are $(sum(totalDeterministicShifts)) job shifts across time ...")
-    
-    println("There are $(sum(adjacencyMatrix)) edges between nodes ...")
-
-    simpleGraph = SimpleGraph(adjacencyMatrix);
-
-    connectedNetwork = connected_components(simpleGraph)
-    
-    connectedSet = connectedNetwork[1]
-
-    println("We have only $(length(connectedSet)) firms fully connected $(length(connectedSet)/nfirms) of the market...") # Double check we might be wrong...
-
-    return df_connected = df[in(connectedSet).(df.j),:]
-    
-    println("Due to unconnectedness we eliminated $(size(df)[1]-size(df_connected)[1]) observations, not much")
-
-end
 
 # %% AKM Estimation:
 
@@ -757,6 +627,8 @@ end
 
 # Re running the data generating process and computing akm estimation...
 
+# %%
+
 initial_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
 
 initial_hyper_params = hyper_parameters(30, 10, 0.1, 10, 10_000)
@@ -765,7 +637,72 @@ initial_hyper_params = hyper_parameters(30, 10, 0.1, 10, 10_000)
 
 df = gen_dataset(initial_hyper_params,α,ψ,G,H)
 
-df_connected = getConnectedDataSet(df);
+# %%
+##### Ed attempt 
+
+
+# Find all movers defined as those with max spell > 0
+function find_movers(df::DataFrame)
+    move_df = @chain df begin
+       groupby(:i)
+       transform(:spell => maximum) 
+       subset(:spell_maximum => x -> x .> 0)
+    end
+
+   return move_df 
+end
+
+
+# Get the next firm the mover is moving to
+# by leading the firm column and extracting 
+# just the firm and next firm as one observation
+function find_firm_links(mover_df::DataFrame)
+    firm_link_df = @chain mover_df begin
+        sort([:i, :t])
+        groupby(:i)
+        transform(:j => lead => :j_next)
+        transform([:j, :j_next] => .==)
+        subset(:j_j_next_BroadcastFunction => x -> x .== false, skipmissing = true)
+        select(:j, :j_next)
+        unique()
+    end
+    return firm_link_df
+end
+
+# Iterate through our firm link df and create a matrix 
+# of links. In R I would model.matrix(a ~ b) but idk how to 
+# do that here
+function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame)
+    adjacency_matrix = zeros(Int, maximum(df.j), maximum(df.j))
+    for firm_a in unique(df.j), firm_b in unique(df.j)
+        subset_a_df = firm_link_df[(firm_link_df.j .== firm_a) .& (firm_link_df.j_next .== firm_b), :]
+        if size(subset_a_df)[1] != 0
+            adjacency_matrix[firm_a, firm_b] = 1
+            adjacency_matrix[firm_b, firm_a] = 1
+        end
+    end
+    return adjacency_matrix
+end
+
+# %%
+mover_df = find_movers(df)
+firm_link_df = find_firm_links(mover_df)
+adjacency_matrix = create_adjacency_matrix(firm_link_df, mover_df)
+
+# %%
+
+simple_graph = SimpleGraph(adjacency_matrix);
+
+connected_network = connected_components(simple_graph)
+
+connected_set = connected_network[1]
+
+println("We have only $(length(connected_set)) firms fully connected $(length(connected_set)/maximum(df.j)) of the market...") # Double check we might be wrong...
+
+df_connected = df[in(connected_set).(df.j),:]
+
+# %%
+
 
 df_connected_results = akm_estimation(df_connected);
 
