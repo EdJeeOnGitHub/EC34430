@@ -568,58 +568,6 @@ plot(H_c, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
 # ## Getting connected set:
 
 
-# %% AKM Estimation:
-
-function akm_estimation(df_connected)
-
-    df_connected[:,:α_hat] .= .0;
-    df_connected[:,:ψ_hat] .= .0;
-
-    # Compute firm type fixed effects ols model: 
-    delta = Inf
-    tol = 0.00001
-    nIter = 1 
-    msePast = 0
-    while delta>tol 
-
-        if nIter == 1
-            # Regress controling for industry fixed effects...
-            model_j = reg(df_connected, term(:lw) ~ fe(:j), save=true);
-            # Obtain residuals (which are controled by industry fe):
-            df_connected[:,:α_hat] = residuals(model_j);
-        else
-            # Just obtain the alpha parameters (not averaged) by netting out psi_hat from prev iter.
-            df_connected[:,:α_hat] = df_connected[:,:lw] - df_connected[:,:ψ_hat]
-        end
-
-        # Average fixed effects by individual:
-        df_connected = transform(groupby(df_connected, :i), :α_hat => mean => :α_hat)
-
-        # Net out individual fixed effects
-        df_connected[:,:ψ_hat] = df_connected[:,:lw] - df_connected[:,:α_hat]
-
-        # Compute average industry fixed effects
-        df_connected = transform(groupby(df_connected, :j), :ψ_hat => mean => :ψ_hat)
-
-        # Model verification
-        model_verify = reg(df_connected, @formula(lw ~ α_hat + ψ_hat), save=true);
-
-        # Compute residuals and mse
-        delta = abs(msePast - sum(residuals(model_verify, df_connected).^2)) 
-
-        msePast = sum(residuals(model_verify, df_connected).^2) 
-
-        # Add count
-        nIter = nIter + 1
-
-        println("At iteration number $(nIter), the MSE is $(delta)")
-
-    end
-    
-    return df_connected
-    
-end
-
 
 # %% 
 
@@ -682,26 +630,83 @@ function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame)
     return adjacency_matrix
 end
 
-# %%
-mover_df = find_movers(df)
-firm_link_df = find_firm_links(mover_df)
-adjacency_matrix = create_adjacency_matrix(firm_link_df, mover_df)
+
+function create_connected_df(df::DataFrame)
+    move_df = find_movers(df)
+    firm_df = find_firm_links(mover_df)
+    adjacency_matrix = create_adjacency_matrix(firm_df, move_df)
+
+
+    simple_graph = SimpleGraph(adjacency_matrix);
+
+    connected_network = connected_components(simple_graph)
+
+    connected_set = connected_network[1]
+
+    println("We have only $(length(connected_set)) firms fully connected $(length(connected_set)/maximum(df.j)) of the market...") # Double check we might be wrong...
+
+    df_connected = df[in(connected_set).(df.j),:]
+    return df_connected
+end
+
 
 # %%
+df_connected = create_connected_df(df)
 
-simple_graph = SimpleGraph(adjacency_matrix);
 
-connected_network = connected_components(simple_graph)
 
-connected_set = connected_network[1]
+# %% AKM Estimation:
 
-println("We have only $(length(connected_set)) firms fully connected $(length(connected_set)/maximum(df.j)) of the market...") # Double check we might be wrong...
+function akm_estimation(df::DataFrame)
+    df[:,:α_hat] .= .0;
+    df[:,:ψ_hat] .= .0;
 
-df_connected = df[in(connected_set).(df.j),:]
+    # Compute firm type fixed effects ols model: 
+    delta = Inf
+    tol = 0.00001
+    nIter = 1 
+    msePast = 0
+    while delta>tol 
+
+        if nIter == 1
+            # Regress controling for industry fixed effects...
+            model_j = reg(df, term(:lw) ~ fe(:k), save=true);
+            # Obtain residuals (which are controled by industry fe):
+            df[:,:α_hat] = residuals(model_j);
+        else
+            # Just obtain the alpha parameters (not averaged) by netting out psi_hat from prev iter.
+            df[:,:α_hat] = df[:,:lw] - df[:,:ψ_hat]
+        end
+
+        # Average fixed effects by individual:
+        df = transform(groupby(df, :i), :α_hat => mean => :α_hat)
+
+        # Net out individual fixed effects
+        df[:,:ψ_hat] = df[:,:lw] - df[:,:α_hat]
+
+        # Compute average industry fixed effects
+        df = transform(groupby(df, :k), :ψ_hat => mean => :ψ_hat)
+
+        # Model verification
+        model_verify = reg(df, @formula(lw ~ α_hat + ψ_hat), save=true);
+
+        # Compute residuals and mse
+        delta = abs(msePast - sum(residuals(model_verify, df).^2)) 
+
+        msePast = sum(residuals(model_verify, df).^2) 
+
+        # Add count
+        nIter = nIter + 1
+
+        println("At iteration number $(nIter), the MSE is $(delta)")
+
+    end
+    
+    return df
+    
+end
 
 # %%
-
-
 df_connected_results = akm_estimation(df_connected);
 
 # %%
@@ -717,6 +722,7 @@ store_fixed_effects_true = zeros(Float64 ,length(λ_list),length(nt_list))
 
 store_fixed_effects_estimated = zeros(Float64 ,length(λ_list),length(nt_list))
 
+# %%
 ii = 1 # idx lambdas
 
 for λ in λ_list
@@ -725,32 +731,29 @@ for λ in λ_list
 
     for nt in nt_list
        
-        initial_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
+        λ_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
 
-        initial_hyper_params = hyper_parameters(30, 10, λ, nt, 10_000) # gen data changing λ and nt
+        λ_hyper_params = hyper_parameters(30, 10, λ, nt, 10_000) # gen data changing λ and nt
         
-        α, ψ, G, H = gen_transition_matrix(initial_params, initial_hyper_params)
+        λ_α, λ_ψ, λ_G, λ_H = gen_transition_matrix(λ_params, λ_hyper_params)
         
-        df = gen_dataset(initial_hyper_params,α,ψ,G,H)
+        λ_df = gen_dataset(λ_hyper_params,λ_α,λ_ψ,λ_G,λ_H)
         
-        df_connected = getConnectedDataSet(df)
+        λ_df_connected = create_connected_df(λ_df) 
 
-        df_connected_results = akm_estimation(df_connected)
+        λ_df_connected_results = akm_estimation(λ_df_connected)
 
-        var_firm_fe_true = variance_decomposition(df_connected_results, true)[2]
+        var_firm_fe_true = variance_decomposition(λ_df_connected_results, true)[2]
 
-        var_firm_fe_estimated = variance_decomposition(df_connected_results, false)[2]
+        var_firm_fe_estimated = variance_decomposition(λ_df_connected_results, false)[2]
 
         store_fixed_effects_true[ii,jj] = var_firm_fe_true 
 
         store_fixed_effects_estimated[ii,jj] = var_firm_fe_estimated    
 
         jj += 1
-
     end
-
     ii += 1
-
 end
 
 # Figure seems ok, increasing t reduces bias due to few mobility ...
@@ -759,14 +762,18 @@ end
 
 plot(1:4, transpose(store_fixed_effects_true), 
             label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
-            markershape = :square, 
-            ylims=(0.2,0.35)) 
+            markershape = :square
+            # linetype = :scatter
+            # ylims=(0.2,0.35)
+            ) 
 plot!(1:4, transpose(store_fixed_effects_estimated),
             label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"],  
             markershape = :circle, 
-            linetype=:scatter,
-            ylims=(0.2,0.35))
+            linetype=:scatter
+            # ylims=(0.2,0.35)
+            )
 plot!(legend=:outertopright)
+
 
 
 # %%
