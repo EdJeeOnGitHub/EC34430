@@ -31,6 +31,7 @@ Pkg.add("CategoricalArrays")
 Pkg.add("LightGraphs")
 Pkg.add("Optim")
 Pkg.add("FixedEffectModels")
+Pkg.add("Flux")
 
 # past the first time, you only need to instanciate the current folder
 Pkg.instantiate(); # Updates packages given .toml file
@@ -51,6 +52,7 @@ using DataFramesMeta
 using LightGraphs
 using TikzGraphs
 using Optim
+
 
 # %% [markdown]
 # ## Constructing Employer-Employee matched data
@@ -833,16 +835,48 @@ plot!(legend=:outertopright)
 
 
 # %%
-# Q9: Correction of mobility bias:
+# Q9: Correction of mobility bias: THIS IS WRONG
 #---------------------------------------------------------------------
 
+initial_hyper_params = hyper_parameters(30, 10, 0.2, 10, 10_000)
+
+df = gen_dataset(initial_hyper_params,α,ψ,G,H)
+
+df_connected = getConnectedDataSet(df);
+
+df_connected_results = akm_estimation(df_connected);
+
+df_connected_results = sort(df_connected_results,[:i, :k])
+
+D = transpose(indicatormat(df_connected_results.i))
+
+F = transpose(indicatormat(df_connected_results.k))
+
+I_i = ones(size(D)[1],1)
+
+II = diagm(0=>fill(1., size(I_i,1)))
+
+A = II - I_i*inv(transpose(I_i)*I_i)*transpose(I_i)
+
+M_z = II
+
+M_d = II - D*inv(transpose(D)*D)*transpose(D) 
+
+F_tilde = M_z*F 
+
+D_tilde = M_d*D
+
+M_tilde_f = II - F_tilde*(transpose(F_tilde)*F_tilde)*transpose(F_tilde)
+
+Q_tilde_f = M_z*M_tilde_f*M_z
+
+Q_tilde_d = M_z*M_tilde_d*M_z
 
 
 
 # %%
 # Q10: Evidence of Learning:
 #---------------------------------------------------------------------
-
 
 
 
