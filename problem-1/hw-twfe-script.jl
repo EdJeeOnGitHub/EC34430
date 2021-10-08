@@ -522,19 +522,21 @@ end
 
 # %%
 function anon_function(param_list)
-    params = parameters(param_list[1], param_list[2], param_list[3], 0.2, param_list[4], param_list[5])
+    params = parameters(param_list[1], param_list[2], param_list[3], 0.2, param_list[4], 0.2)
     values = variance_calibration(params, initial_hyper_params)
-    target = [0.084, 0.025, 0.003, 0.137]
-    mse = mean((target .- values).^2)
+    target = [0.084, 0.025, 0.003, 0.138]
+    mse = mean((100 .* (target .- values)).^2)
     return mse
 end
 
-# %%
+# %%|
 using Optim
 results = Optim.optimize(
     anon_function,
-    [1, 1, 0.01, 0.012, 0.015],
-    LBFGS()
+    [0.25, 0.25, 0.25, 0.25],
+    # LBFGS(),
+    MomentumGradientDescent()
+    # Optim.Options(tol)
 )
 
 # %%
@@ -544,17 +546,24 @@ calibrated_params = parameters(
     Optim.minimizer(results)[3],
     0.2,
     Optim.minimizer(results)[4],
-    Optim.minimizer(results)[5],
+    0.2
+    # Optim.minimizer(results)[5] 
 )
 
+
+# %% [markdown]
+# The optimisation function literally returns whatever the initial parameters are but still
+# returns a success flag... nice. We <3 identification.
+#
 
 
 # %%
 α_c, ψ_c, G_c, H_c  = gen_transition_matrix(calibrated_params, initial_hyper_params)
 df_calibrated = gen_dataset(initial_hyper_params, α_c, ψ_c, G_c, H_c)
 
-
-
+values = variance_calibration(calibrated_params, initial_hyper_params)
+target = [0.084, 0.025, 0.003, 0.137]
+mse = mean((target .- values).^2)
 # %% [markdown]
 # Generating calibrated plots - these don't look totally convincing
 # %%
@@ -635,7 +644,7 @@ end
 
 function create_connected_df(df::DataFrame)
     move_df = find_movers(df)
-    firm_df = find_firm_links(mover_df)
+    firm_df = find_firm_links(move_df)
     adjacency_matrix = create_adjacency_matrix(firm_df, move_df)
 
 
@@ -710,29 +719,145 @@ end
 
 # %%
 df_connected_results = akm_estimation(df_connected);
-
 # %%
 
 # Q8: Limited mobility bias
 #---------------------------------------------------------------------
+# %%
 
+function run_mob_bias_simulation(λ::Float64, nt::Int, params::parameters)
+
+        λ_hyper_params = hyper_parameters(30, 10, λ, nt, 10_000) # gen data changing λ and nt
+        
+        λ_α, λ_ψ, λ_G, λ_H = gen_transition_matrix(params, λ_hyper_params)
+        
+        λ_df = gen_dataset(λ_hyper_params,λ_α,λ_ψ,λ_G,λ_H)
+        
+        λ_df_connected = create_connected_df(λ_df) 
+
+        λ_df_connected_results = akm_estimation(λ_df_connected)
+
+        cov_αψ = cov(λ_df_connected_results.α, λ_df_connected_results.ψ)
+        cov_αψ_hat = cov(λ_df_connected_results.α_hat,λ_df_connected_results.ψ_hat )
+        ψ_mse = @chain λ_df_connected_results begin
+            groupby(:k)
+            combine(:ψ => unique, :ψ_hat => unique) 
+            combine([:ψ_unique, :ψ_hat_unique] => (x, y) -> mean((x .- y).^2))
+            _[1,1]
+        end
+        return cov_αψ, cov_αψ_hat, ψ_mse
+end
+
+
+
+# %%
 λ_list = [0.1 0.2 0.3 0.4 0.5 0.6]
 
 nt_list = [8 10 15 20]
+
+
+λ_bias_df = broadcast(
+    x -> run_mob_bias_simulation(x, nt_list[2], initial_params),
+    λ_list
+)
+
+
+# %%
+
+nt_bias_df = broadcast(
+    x -> run_mob_bias_simulation(λ_list[1], x, initial_params),
+    nt_list
+)
+
+
+# %%
+
+nt_bias_clean =  hcat(
+    [el[1] for el in nt_bias_df][:],
+    [el[2] for el in nt_bias_df][:],
+    [el[3] for el in nt_bias_df][:]
+)
+
+
+# %%
+
+plot(
+   nt_list,
+   nt_bias_clean[: , 1],
+            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
+            markershape = :circle,
+   linetype= :scatter
+)
+
+plot!(
+   nt_list,
+   nt_bias_clean[: , 2],
+            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
+            markershape = :square,
+   linetype= :scatter
+)
+
+
+plot(
+    nt_bias_clean[:, 1],
+    nt_bias_clean[:, 2],
+    linetype = :scatter
+)
+Plots.abline!(1, 0)
+
+# %%
+λ_bias_clean =  hcat(
+    [el[1] for el in λ_bias_df][:],
+    [el[2] for el in λ_bias_df][:],
+    [el[3] for el in λ_bias_df][:]
+)
+
+# %%
+
+plot(
+   λ_list,
+   λ_bias_clean[: , 1],
+            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
+            markershape = :circle,
+   linetype= :scatter
+)
+
+plot!(
+   λ_list,
+   λ_bias_clean[: , 2],
+            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
+            markershape = :square,
+   linetype= :scatter
+)
+
+
+
+plot(
+    λ_list,
+   λ_bias_clean[:, 3],
+   linetype = :scatter
+)
+# %%
 
 store_fixed_effects_true = zeros(Float64 ,length(λ_list),length(nt_list))
 
 store_fixed_effects_estimated = zeros(Float64 ,length(λ_list),length(nt_list))
 
+store_ψ_mse = zeros(Float64 ,length(λ_list),length(nt_list))
 # %%
-ii = 1 # idx lambdas
 
-for λ in λ_list
 
-    jj = 1 # idx nt 
+# %%
 
-    for nt in nt_list
-       
+
+
+
+
+
+Threads.@threads for i in 1:size(λ_list)[2]
+    λ =λ_list[i]
+    for j  in 1:size(nt_list)[2] # for now lets just loop once
+        nt = nt_list[i]
         λ_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
 
         λ_hyper_params = hyper_parameters(30, 10, λ, nt, 10_000) # gen data changing λ and nt
@@ -745,19 +870,24 @@ for λ in λ_list
 
         λ_df_connected_results = akm_estimation(λ_df_connected)
 
-        var_firm_fe_true = variance_decomposition(λ_df_connected_results, true)[2]
+        cov_αψ = cov(λ_df_connected_results.α, λ_df_connected_results.ψ)
+        cov_αψ_hat = cov(λ_df_connected_results.α_hat,λ_df_connected_results.ψ_hat )
+        ψ_mse = @chain λ_df_connected_results begin
+            groupby(:k)
+            combine(:ψ => unique, :ψ_hat => unique) 
+            combine([:ψ_unique, :ψ_hat_unique] => (x, y) -> mean((x .- y).^2))
+            _[1,1]
+        end
 
-        var_firm_fe_estimated = variance_decomposition(λ_df_connected_results, false)[2]
+        store_fixed_effects_true[i,j] = cov_αψ 
 
-        store_fixed_effects_true[ii,jj] = var_firm_fe_true 
+        store_fixed_effects_estimated[i,j] = cov_αψ_hat 
+        store_ψ_mse[i,j] = ψ_mse
 
-        store_fixed_effects_estimated[ii,jj] = var_firm_fe_estimated    
-
-        jj += 1
     end
-    ii += 1
 end
 
+# %%
 # Figure seems ok, increasing t reduces bias due to few mobility ...
 # Increasing mobility sort of tackles the issue when t low...
 # Remove first two samples are distorting the figure
@@ -777,7 +907,7 @@ plot!(1:4, transpose(store_fixed_effects_estimated),
 plot!(legend=:outertopright)
 
 
-
+store_fixed_effects_true
 # %%
 # Q9: Correction of mobility bias: THIS IS WRONG
 #---------------------------------------------------------------------
