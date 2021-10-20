@@ -555,16 +555,6 @@ approx_calibrated_params = parameters(
     0.2
     # Optim.minimizer(results)[5] 
 )
-# %%
-calibrated_params = parameters(
-    Optim.minimizer(results)[1],
-    Optim.minimizer(results)[2],
-    Optim.minimizer(results)[3],
-    0.2,
-    Optim.minimizer(results)[4],
-    0.2
-    # Optim.minimizer(results)[5] 
-)
 
 
 # %% [markdown]
@@ -574,21 +564,21 @@ calibrated_params = parameters(
 
 
 # %%
-α_c, ψ_c, G_c, H_c  = gen_transition_matrix(calibrated_params, initial_hyper_params)
-df_calibrated = gen_dataset(initial_hyper_params, α_c, ψ_c, G_c, H_c)
+calibrated_transition_matrix  = transition_matrix(calibrated_params, sim_hyper_params)
+calibrated_sim = simulation_draw(sim_hyper_params, calibrated_transition_matrix)
 
-values = variance_calibration(calibrated_params, initial_hyper_params)
+values = variance_calibration(calibrated_params, sim_hyper_params)
 target = [0.084, 0.025, 0.003, 0.137]
 mse = mean((target .- values).^2)
 # %% [markdown]
 # Generating calibrated plots - these don't look totally convincing
 # %%
 
-p1 = plot(G_c[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
-p2 = plot(G_c[end, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
+p1 = plot(calibrated_transition_matrix.G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
+p2 = plot(calibrated_transition_matrix.G[end, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
 plot(p1, p2, layout = (1, 2), size=[600,300])
 # %%
-plot(H_c, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
+plot(calibrated_transition_matrix.H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
 
 
 # %% [markdown]
@@ -596,19 +586,6 @@ plot(H_c, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
 
 
 
-# %% 
-
-# Re running the data generating process and computing akm estimation...
-
-# %%
-
-initial_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
-
-initial_hyper_params = hyper_parameters(30, 10, 0.1, 10, 10_000)
-
-α, ψ, G, H = gen_transition_matrix(initial_params, initial_hyper_params)
-
-df = gen_dataset(initial_hyper_params,α,ψ,G,H)
 
 # %%
 ##### Ed attempt 
@@ -678,16 +655,13 @@ end
 
 
 # %%
-df_connected = create_connected_df(df)
+df_connected = create_connected_df(sim_df)
 
 
 
 # %% AKM Estimation:
 
 function akm_estimation(df::DataFrame)
-    df[:,:α_hat] .= .0;
-    df[:,:ψ_hat] .= .0;
-
     # Compute firm type fixed effects ols model: 
     delta = Inf
     tol = 0.00001
@@ -697,9 +671,12 @@ function akm_estimation(df::DataFrame)
 
         if nIter == 1
             # Regress controling for industry fixed effects...
-            model_j = reg(df, term(:lw) ~ fe(:k), save=true);
+
+            model_j = reg(df, term(:lw) ~ fe(:j), save=true);
             # Obtain residuals (which are controled by industry fe):
-            df[:,:α_hat] = residuals(model_j);
+            resid = residuals(model_j)
+            skipmissing(resid)
+            df[:, :α_hat] = residuals(model_j);
         else
             # Just obtain the alpha parameters (not averaged) by netting out psi_hat from prev iter.
             df[:,:α_hat] = df[:,:lw] - df[:,:ψ_hat]
@@ -712,7 +689,7 @@ function akm_estimation(df::DataFrame)
         df[:,:ψ_hat] = df[:,:lw] - df[:,:α_hat]
 
         # Compute average industry fixed effects
-        df = transform(groupby(df, :k), :ψ_hat => mean => :ψ_hat)
+        df = transform(groupby(df, :j), :ψ_hat => mean => :ψ_hat)
 
         # Model verification
         model_verify = reg(df, @formula(lw ~ α_hat + ψ_hat), save=true);
@@ -742,17 +719,22 @@ df_connected_results = akm_estimation(df_connected);
 # %%
 
 function run_mob_bias_simulation(λ::Float64, nt::Int, params::parameters)
+        λ = 0.1
+        nt = 10
+        params = sim_params
 
+
+
+    # delete above here
         λ_hyper_params = hyper_parameters(30, 10, λ, nt, 10_000) # gen data changing λ and nt
         
-        λ_α, λ_ψ, λ_G, λ_H = gen_transition_matrix(params, λ_hyper_params)
+        λ_transition_matrix = transition_matrix(params, λ_hyper_params)
         
-        λ_df = gen_dataset(λ_hyper_params,λ_α,λ_ψ,λ_G,λ_H)
-        
+        λ_sim = simulation_draw(λ_hyper_params, λ_transition_matrix)
+        λ_df = λ_sim.df
         λ_df_connected = create_connected_df(λ_df) 
 
         λ_df_connected_results = akm_estimation(λ_df_connected)
-
         cov_αψ = cov(λ_df_connected_results.α, λ_df_connected_results.ψ)
         cov_αψ_hat = cov(λ_df_connected_results.α_hat,λ_df_connected_results.ψ_hat )
         ψ_mse = @chain λ_df_connected_results begin
@@ -773,7 +755,7 @@ nt_list = [8 10 15 20]
 
 
 λ_bias_df = broadcast(
-    x -> run_mob_bias_simulation(x, nt_list[2], initial_params),
+    x -> run_mob_bias_simulation(x, nt_list[2], sim_params),
     λ_list
 )
 
