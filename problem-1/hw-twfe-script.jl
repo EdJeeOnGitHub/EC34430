@@ -23,15 +23,15 @@ using Pkg
 Pkg.activate(".") # Create new environment in this folder
 
 # first time you need to install dependencies
-Pkg.add("Distributions")
-Pkg.add("StatsBase")
-Pkg.add(["DataFrames","DataFramesMeta","Chain"])
-Pkg.add("Plots")
-Pkg.add("CategoricalArrays")
-Pkg.add("LightGraphs")
-Pkg.add("Optim")
-Pkg.add("FixedEffectModels")
-Pkg.add("Flux")
+# Pkg.add("Distributions")
+# Pkg.add("StatsBase")
+# Pkg.add(["DataFrames","DataFramesMeta","Chain"])
+# Pkg.add("Plots")
+# Pkg.add("CategoricalArrays")
+# Pkg.add("LightGraphs")
+# Pkg.add("Optim")
+# Pkg.add("FixedEffectModels")
+# Pkg.add("Flux")
 
 # past the first time, you only need to instanciate the current folder
 # Pkg.instantiate(); # Updates packages given .toml file
@@ -81,174 +81,177 @@ struct hyper_parameters
     ni::Int # n indiv
 end
 
-# %%
-
-function gen_transition_matrix(params::parameters, hyper_params::hyper_parameters)
-    # setting params
-    α_sd = params.α_sd
-    ψ_sd = params.ψ_sd 
-    csort = params.csort
-    cnetw = params.cnetw
-    csig = params.csig
-
-    nk = hyper_params.nk
-    nl = hyper_params.nl
 
 
-    # approximate each distribution with some points of support
-    ψ = quantile.(Normal(), (1:nk) / (nk + 1)) * ψ_sd
-    α = quantile.(Normal(), (1:nl) / (nl + 1)) * α_sd
+struct transition_matrix
+    α::Vector
+    ψ::Vector
+    G::Array
+    H::Array
 
-    # Let's create type-specific transition matrices
-    # We are going to use joint normals centered on different values
-    G = zeros(nl, nk, nk)
-    for l in 1:nl, k in 1:nk
-        G[l, k, :] = pdf( Normal(0, csig), ψ .- cnetw * ψ[k] .- csort * α[l])
-        G[l, k, :] = G[l, k, :] ./ sum(G[l, k, :])
-    end
+    function transition_matrix(params::parameters, hyper_params::hyper_parameters)
+        # setting params
+        α_sd = params.α_sd
+        ψ_sd = params.ψ_sd 
+        csort = params.csort
+        cnetw = params.cnetw
+        csig = params.csig
 
-    # We then solve for the stationary distribution over psis for each alpha value
-    # We apply a crude fixed point approach
-    H = ones(nl, nk) ./ nk
-    for l in 1:nl
-        M = transpose(G[l, :, :])
-        for i in 1:100
-            H[l, :] = M * H[l, :]
+        nk = hyper_params.nk
+        nl = hyper_params.nl
+
+
+        # approximate each distribution with some points of support
+        ψ = quantile.(Normal(), (1:nk) / (nk + 1)) * α_sd
+        α = quantile.(Normal(), (1:nl) / (nl + 1)) * ψ_sd
+
+        # Let's create type-specific transition matrices
+        # We are going to use joint normals centered on different values
+        G = zeros(nl, nk, nk)
+        for l in 1:nl, k in 1:nk
+            G[l, k, :] = pdf( Normal(0, csig), ψ .- cnetw * ψ[k] .- csort * α[l])
+            G[l, k, :] = G[l, k, :] ./ sum(G[l, k, :])
         end
+
+        # We then solve for the stationary distribution over psis for each alpha value
+        # We apply a crude fixed point approach
+        H = ones(nl, nk) ./ nk
+        for l in 1:nl
+            M = transpose(G[l, :, :])
+            for i in 1:100
+                H[l, :] = M * H[l, :]
+            end
+        end
+        new(α, ψ, G, H)
     end
-    return α, ψ, G, H
 end
 
 
+struct simulation_draw
+    df::DataFrame
+    hyper_parameters::hyper_parameters
+    transition_matrix::transition_matrix
 
-function gen_dataset(
-    hyper_params::hyper_parameters,
-    α::Array{Float64, 1},
-    ψ::Array{Float64, 1},
-    G::Array{Float64, 3},
-    H::Array{Float64, 2}
-)
-    # setting params
-    nk = hyper_params.nk
-    nl = hyper_params.nl
-    ni = hyper_params.ni
-    nt = hyper_params.nt
-    λ = hyper_params.λ
-    w_sigma = 0.2
+    function simulation_draw(hyper_parameters::hyper_parameters, transition_matrix::transition_matrix) 
+        α = transition_matrix.α
+        ψ = transition_matrix.ψ
+        G = transition_matrix.G
+        H = transition_matrix.H
 
-    # We simulate a balanced panel
-    ll = zeros(Int64, ni, nt) # Worker type
-    kk = zeros(Int64, ni, nt) # Firm type
-    spellcount = zeros(Int64, ni, nt) # Employment spell
+        # setting params
+        nk = hyper_parameters.nk
+        nl = hyper_parameters.nl
+        ni = hyper_parameters.ni
+        nt = hyper_parameters.nt
+        λ = hyper_parameters.λ
+        w_sigma = 0.2
+        
 
-    for i in 1:ni
-        
-        # We draw the worker type
-        l = rand(1:nl)
-        ll[i,:] .= l
-        
-        # At time 1, we draw from H
-        kk[i,1] = sample(1:nk, Weights(H[l, :]))
-        
-        for t in 2:nt
-            if rand() < λ
-                kk[i,t] = sample(1:nk, Weights(G[l, kk[i,t-1], :]))
-                spellcount[i,t] = spellcount[i,t-1] + 1
-            else
-                kk[i,t] = kk[i,t-1]
-                spellcount[i,t] = spellcount[i,t-1]
-            end
-        end
-        
-    end
+        # We simulate a balanced panel
+        ll = zeros(Int64, ni, nt) # Worker type
+        kk = zeros(Int64, ni, nt) # Firm type
+        spellcount = zeros(Int64, ni, nt) # Employment spell
 
-    #------------------------------------------------------------
-
-    firms_per_type = 15
-    jj = zeros(Int64, ni, nt) # Firm identifiers
-
-    draw_firm_from_type(k) = sample(1:firms_per_type) + (k - 1) * firms_per_type
-
-    for i in 1:ni
-        
-        # extract firm type
-        k = kk[i,1]
-        
-        # We draw the firm (one of firms_per_type in given group)
-        jj[i,1] = draw_firm_from_type(k)
-        
-        for t in 2:nt
-            if spellcount[i,t] == spellcount[i,t-1]
-                # We keep the firm the same
-                jj[i,t] = jj[i,t-1]
-            else
-                # We draw a new firm
-                k = kk[i,t]
-                
-                new_j = draw_firm_from_type(k)            
-                # Make sure the new firm is actually new
-                while new_j == jj[i,t-1]
-                    new_j = draw_firm_from_type(k)
+        for i in 1:ni
+            
+            # We draw the worker type
+            l = rand(1:nl)
+            ll[i,:] .= l
+            
+            # At time 1, we draw from H
+            kk[i,1] = sample(1:nk, Weights(H[l, :]))
+            
+            for t in 2:nt
+                if rand() < λ
+                    kk[i,t] = sample(1:nk, Weights(G[l, kk[i,t-1], :]))
+                    spellcount[i,t] = spellcount[i,t-1] + 1
+                else
+                    kk[i,t] = kk[i,t-1]
+                    spellcount[i,t] = spellcount[i,t-1]
                 end
-                
-                jj[i,t] = new_j
+            end
+            
+        end
+
+        #------------------------------------------------------------
+
+        firms_per_type = 15
+        jj = zeros(Int64, ni, nt) # Firm identifiers
+
+        draw_firm_from_type(k) = sample(1:firms_per_type) + (k - 1) * firms_per_type
+
+        for i in 1:ni
+            
+            # extract firm type
+            k = kk[i,1]
+            
+            # We draw the firm (one of firms_per_type in given group)
+            jj[i,1] = draw_firm_from_type(k)
+            
+            for t in 2:nt
+                if spellcount[i,t] == spellcount[i,t-1]
+                    # We keep the firm the same
+                    jj[i,t] = jj[i,t-1]
+                else
+                    # We draw a new firm
+                    k = kk[i,t]
+                    
+                    new_j = draw_firm_from_type(k)            
+                    # Make sure the new firm is actually new
+                    while new_j == jj[i,t-1]
+                        new_j = draw_firm_from_type(k)
+                    end
+                    
+                    jj[i,t] = new_j
+                end
             end
         end
+        # Make sure firm ids are contiguous
+        contiguous_ids = Dict( unique(jj) .=> 1:length(unique(jj))  )
+        jj .= getindex.(Ref(contiguous_ids),jj);
+
+        #----------------------------------------------------------------------------------------
+
+        ii = repeat(1:ni,1,nt)
+        tt = repeat((1:nt)',ni,1)
+        df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
+        
+        df[!, :lw] = df.α + df.ψ + w_sigma * rand(Normal(), size(df)[1]);
+
+        new(df, hyper_parameters, transition_matrix)
     end
-    # Make sure firm ids are contiguous
-    contiguous_ids = Dict( unique(jj) .=> 1:length(unique(jj))  )
-    jj .= getindex.(Ref(contiguous_ids),jj);
-
-    #----------------------------------------------------------------------------------------
-
-    ii = repeat(1:ni,1,nt)
-    tt = repeat((1:nt)',ni,1)
-    df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
-    
-    df[!, :lw] = df.α + df.ψ + w_sigma * rand(Normal(), size(df)[1]);
-
-
-    return df
-    
 end
 
 
 # %%
 
 
-# %%
-
-initial_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
-initial_hyper_params = hyper_parameters(30, 10, 0.1, 10, 10_000)
-α, ψ, G, H = gen_transition_matrix(initial_params, initial_hyper_params)
 
 
-# # %%
 
-
-# p1 = plot(G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
-# p2 = plot(G[initial_hyper_params.nl, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
-# plot(p1, p2, layout = (1, 2), size=[600,300])
+sim_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
+sim_hyper_params = hyper_parameters(30, 10, 0.1, 10, 10_000)
+sim_transition_matrix = transition_matrix(sim_params, sim_hyper_params)
 
 # %%
+show_plots = false
+if show_plots == true
+    p1 = plot(sim_transition_matrix.G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
+    p2 = plot(sim_transition_matrix.G[sim_hyper_params.nl, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
+    plot(p1, p2, layout = (1, 2), size=[600,300])
+end
+# %%
+sim_draw = simulation_draw(sim_hyper_params, sim_transition_matrix)
+sim_df = sim_draw.df
 
-df = gen_dataset(
-    initial_hyper_params,
-    α,
-    ψ,
-    G,
-    H
-)
-
-p1 = plot(G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
-p2 = plot(G[end, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
-plot(p1, p2, layout = (1, 2), size=[600,300])
 
 # %% [markdown]
 # And we can plot the joint distribution of matches
 
 # %%
-plot(H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
+if show_plots == true
+    plot(sim_transition_matrix.H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
+end
 
 # %% [markdown]
 # <span style="color:green">Question 1</span>
@@ -302,11 +305,11 @@ plot(H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
 
 # %%
 
-last(df, 500)
+last(sim_df, 500)
 
 
 # %%
-@chain df begin
+@chain sim_df begin
     groupby([:j, :t])
     combine(nrow => :count)
     groupby(:j)
@@ -320,7 +323,7 @@ end
 #Number of movers at the firm, defined as people that moved into the firm at any point in time:
 #Here we can be double (or more) counting returners as new movers for the firm  ...
 
-moversDataFrame = @chain df begin
+moversDataFrame = @chain sim_df begin
     groupby([:j, :i, :spell]) # Group at the firm, individual, spell level
     combine(:t => mean)       # Collapse, this column doesn't matter actually
     @transform!(:spell_true = :spell .> 0) # If spell != 0 it means individual moved in (don't care when or if returner)
@@ -333,7 +336,7 @@ end
 # 
 
 # %%
-@chain df begin
+@chain sim_df begin
     groupby([:j, :i, :spell])
     transform(nrow => :spell_count)
     subset(:spell_count => ByRow(spell_count -> spell_count == 0) )
@@ -380,7 +383,7 @@ end
 # 5. Plot the lines associated with each transition
 
 # %%
-df[!, :dummy] .= 1;
+sim_df[!, :dummy] .= 1;
 
 
 #1. Mean wage within firm: 
@@ -407,7 +410,7 @@ end
 
 
 
-eventStudyPanel =  @chain df begin
+eventStudyPanel =  @chain sim_df begin
     groupby([:j, :t]) # Group by firm and time 
     transform(:lw => mean) # Obtain wage at that group level
     @transform!(:wage_percentile = cut(:lw_mean, 4)) # Get wage_percentile at same level of agregation
@@ -506,26 +509,19 @@ function variance_decomposition(df, true_parameters=true)
 end
 
 function variance_calibration(params::parameters, hyper_params::hyper_parameters)
-    α, ψ, G, H = gen_transition_matrix(params, hyper_params)
-    
-    df = gen_dataset(
-        hyper_params,
-        α,
-        ψ,
-        G,
-        H
-    )    
+    transition_mat = transition_matrix(params, hyper_params)
+    sim_draw = simulation_draw(hyper_params, transition_mat)
 
-    return variance_decomposition(df, true)
+    return variance_decomposition(sim_draw.df, true)
 
 end
 
 # %%
 function anon_function(param_list)
     params = parameters(param_list[1], param_list[2], param_list[3], 0.2, param_list[4], 0.2)
-    values = variance_calibration(params, initial_hyper_params)
+    values = variance_calibration(params, sim_hyper_params)
     target = [0.084, 0.025, 0.003, 0.138]
-    mse = mean((100 .* (target .- values)).^2)
+    mse = mean((target .- values).^2)
     return mse
 end
 
@@ -535,10 +531,30 @@ results = Optim.optimize(
     anon_function,
     [0.25, 0.25, 0.25, 0.25],
     # LBFGS(),
-    MomentumGradientDescent()
-    # Optim.Options(tol)
+    NelderMead(),
+    Optim.Options(iterations = 10_000)
 )
 
+# %%
+# %%
+using Optim
+approx_results = Optim.optimize(
+    anon_function,
+    [0.25, 0.25, 0.25, 0.25],
+    # LBFGS(),
+    NelderMead(),
+    Optim.Options(g_abstol = 1e-6)
+)
+
+approx_calibrated_params = parameters(
+    Optim.minimizer(approx_results)[1],
+    Optim.minimizer(approx_results)[2],
+    Optim.minimizer(approx_results)[3],
+    0.2,
+    Optim.minimizer(approx_results)[4],
+    0.2
+    # Optim.minimizer(results)[5] 
+)
 # %%
 calibrated_params = parameters(
     Optim.minimizer(results)[1],
