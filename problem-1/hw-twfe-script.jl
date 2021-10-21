@@ -662,53 +662,31 @@ df_connected = create_connected_df(sim_df)
 # %% AKM Estimation:
 
 function akm_estimation(df::DataFrame)
-    # Compute firm type fixed effects ols model: 
-    delta = Inf
-    tol = 0.00001
-    nIter = 1 
-    msePast = 0
-    while delta>tol 
+    df[!, :α_hat] .= 0
+    df[!, :ψ_hat] .= 0
 
-        if nIter == 1
-            # Regress controling for industry fixed effects...
+    delta = Inf 
+    tol = 1e-5
+    transform!(x -> mean(x.lw - x.ψ_hat), groupby(df, :i))    
+    df.α_hat = df.x1
+    transform!(x -> mean(x.lw - x.α_hat), groupby(df, :j))
+    df.ψ_hat = df.x1
+    mse = mean((df.lw .- df.α_hat .- df.ψ_hat).^2)
 
-            model_j = reg(df, term(:lw) ~ fe(:j), save=true);
-            # Obtain residuals (which are controled by industry fe):
-            resid = residuals(model_j)
-            skipmissing(resid)
-            df[:, :α_hat] = residuals(model_j);
-        else
-            # Just obtain the alpha parameters (not averaged) by netting out psi_hat from prev iter.
-            df[:,:α_hat] = df[:,:lw] - df[:,:ψ_hat]
-        end
 
-        # Average fixed effects by individual:
-        df = transform(groupby(df, :i), :α_hat => mean => :α_hat)
+    while delta > tol
 
-        # Net out individual fixed effects
-        df[:,:ψ_hat] = df[:,:lw] - df[:,:α_hat]
-
-        # Compute average industry fixed effects
-        df = transform(groupby(df, :j), :ψ_hat => mean => :ψ_hat)
-
-        # Model verification
-        model_verify = reg(df, @formula(lw ~ α_hat + ψ_hat), save=true);
-
-        # Compute residuals and mse
-        delta = abs(msePast - sum(residuals(model_verify, df).^2)) 
-
-        msePast = sum(residuals(model_verify, df).^2) 
-
-        # Add count
-        nIter = nIter + 1
-
-        println("At iteration number $(nIter), the MSE is $(delta)")
-
+        transform!(x -> mean(x.lw - x.ψ_hat), groupby(df, :i))    
+        df.α_hat = df.x1
+        transform!(x -> mean(x.lw - x.α_hat), groupby(df, :j))
+        df.ψ_hat = df.x1
+        new_mse = mean((df.lw .- df.α_hat .- df.ψ_hat).^2)
+        delta =  new_mse - mse
+        mse = new_mse
     end
-    
     return df
-    
 end
+
 
 # %%
 df_connected_results = akm_estimation(df_connected);
@@ -719,13 +697,6 @@ df_connected_results = akm_estimation(df_connected);
 # %%
 
 function run_mob_bias_simulation(λ::Float64, nt::Int, params::parameters)
-        λ = 0.1
-        nt = 10
-        params = sim_params
-
-
-
-    # delete above here
         λ_hyper_params = hyper_parameters(30, 10, λ, nt, 10_000) # gen data changing λ and nt
         
         λ_transition_matrix = transition_matrix(params, λ_hyper_params)
@@ -735,23 +706,39 @@ function run_mob_bias_simulation(λ::Float64, nt::Int, params::parameters)
         λ_df_connected = create_connected_df(λ_df) 
 
         λ_df_connected_results = akm_estimation(λ_df_connected)
+
         cov_αψ = cov(λ_df_connected_results.α, λ_df_connected_results.ψ)
         cov_αψ_hat = cov(λ_df_connected_results.α_hat,λ_df_connected_results.ψ_hat )
-        ψ_mse = @chain λ_df_connected_results begin
-            groupby(:k)
-            combine(:ψ => unique, :ψ_hat => unique) 
-            combine([:ψ_unique, :ψ_hat_unique] => (x, y) -> mean((x .- y).^2))
-            _[1,1]
-        end
-        return cov_αψ, cov_αψ_hat, ψ_mse
+
+        cov_bias = cov_αψ - cov_αψ_hat
+        var_ψ = var(λ_df_connected_results.ψ)
+        var_ψ_hat = var(λ_df_connected_results.ψ_hat)
+        var_bias = var_ψ - var_ψ_hat
+        result_df = DataFrame(
+            Dict(
+                :cov_αψ => cov_αψ,
+                :cov_αψ_hat => cov_αψ_hat, 
+                :cov_bias => cov_bias, 
+                :var_ψ => var_ψ,
+                :var_ψ_hat => var_ψ_hat,
+                :var_bias => var_bias,
+                :T => nt,
+                :λ => λ
+            )
+        )
+
+
+        return  result_df
 end
 
 
 
 # %%
-λ_list = [0.1 0.2 0.3 0.4 0.5 0.6]
 
-nt_list = [8 10 15 20]
+
+λ_list = [0.1, 0.3, 0.5, 0.7, 0.9]
+nt_list = [5, 6, 8, 10, 15];
+
 
 
 λ_bias_df = broadcast(
@@ -759,227 +746,57 @@ nt_list = [8 10 15 20]
     λ_list
 )
 
+# %%
+
+λ_bias_plot_df = reduce(vcat, λ_bias_df)
+plot(
+    λ_bias_plot_df[!, :λ],
+     λ_bias_plot_df[!, :cov_αψ],
+     markershape= :circle,
+     linetype = :scatter)
+plot!(
+    λ_bias_plot_df[!, :λ],
+    λ_bias_plot_df[!, :cov_αψ_hat])
+
+
+
+# %%
+plot(
+   λ_bias_plot_df.λ,
+   λ_bias_plot_df.var_bias
+)
+
+
 
 # %%
 
 nt_bias_df = broadcast(
-    x -> run_mob_bias_simulation(λ_list[1], x, initial_params),
+    x -> run_mob_bias_simulation(λ_list[1], x, sim_params),
     nt_list
 )
 
-
-# %%
-
-nt_bias_clean =  hcat(
-    [el[1] for el in nt_bias_df][:],
-    [el[2] for el in nt_bias_df][:],
-    [el[3] for el in nt_bias_df][:]
-)
+nt_bias_df = reduce(vcat, nt_bias_df)
 
 
 # %%
 
 plot(
-   nt_list,
-   nt_bias_clean[: , 1],
-            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
-            markershape = :circle,
-   linetype= :scatter
-)
-
+    nt_bias_df[!, :T],
+     nt_bias_df[!, :cov_αψ],
+     markershape= :circle,
+     linetype = :scatter)
 plot!(
-   nt_list,
-   nt_bias_clean[: , 2],
-            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
-            markershape = :square,
-   linetype= :scatter
-)
+    nt_bias_df[!, :T],
+    nt_bias_df[!, :cov_αψ_hat])
 
 
+
+# %%
 plot(
-    nt_bias_clean[:, 1],
-    nt_bias_clean[:, 2],
-    linetype = :scatter
-)
-Plots.abline!(1, 0)
-
-# %%
-λ_bias_clean =  hcat(
-    [el[1] for el in λ_bias_df][:],
-    [el[2] for el in λ_bias_df][:],
-    [el[3] for el in λ_bias_df][:]
+   nt_bias_df.T,
+   nt_bias_df.var_bias
 )
 
-# %%
-
-plot(
-   λ_list,
-   λ_bias_clean[: , 1],
-            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
-            markershape = :circle,
-   linetype= :scatter
-)
-
-plot!(
-   λ_list,
-   λ_bias_clean[: , 2],
-            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
-            markershape = :square,
-   linetype= :scatter
-)
-
-
-
-plot(
-    λ_list,
-   λ_bias_clean[:, 3],
-   linetype = :scatter
-)
-# %%
-
-store_fixed_effects_true = zeros(Float64 ,length(λ_list),length(nt_list))
-
-store_fixed_effects_estimated = zeros(Float64 ,length(λ_list),length(nt_list))
-
-store_ψ_mse = zeros(Float64 ,length(λ_list),length(nt_list))
-# %%
-
-
-# %%
-
-
-
-
-
-
-Threads.@threads for i in 1:size(λ_list)[2]
-    λ =λ_list[i]
-    for j  in 1:size(nt_list)[2] # for now lets just loop once
-        nt = nt_list[i]
-        λ_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
-
-        λ_hyper_params = hyper_parameters(30, 10, λ, nt, 10_000) # gen data changing λ and nt
-        
-        λ_α, λ_ψ, λ_G, λ_H = gen_transition_matrix(λ_params, λ_hyper_params)
-        
-        λ_df = gen_dataset(λ_hyper_params,λ_α,λ_ψ,λ_G,λ_H)
-        
-        λ_df_connected = create_connected_df(λ_df) 
-
-        λ_df_connected_results = akm_estimation(λ_df_connected)
-
-        cov_αψ = cov(λ_df_connected_results.α, λ_df_connected_results.ψ)
-        cov_αψ_hat = cov(λ_df_connected_results.α_hat,λ_df_connected_results.ψ_hat )
-        ψ_mse = @chain λ_df_connected_results begin
-            groupby(:k)
-            combine(:ψ => unique, :ψ_hat => unique) 
-            combine([:ψ_unique, :ψ_hat_unique] => (x, y) -> mean((x .- y).^2))
-            _[1,1]
-        end
-
-        store_fixed_effects_true[i,j] = cov_αψ 
-
-        store_fixed_effects_estimated[i,j] = cov_αψ_hat 
-        store_ψ_mse[i,j] = ψ_mse
-
-    end
-end
-
-# %%
-# Figure seems ok, increasing t reduces bias due to few mobility ...
-# Increasing mobility sort of tackles the issue when t low...
-# Remove first two samples are distorting the figure
-
-plot(1:4, transpose(store_fixed_effects_true), 
-            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"], 
-            markershape = :square
-            # linetype = :scatter
-            # ylims=(0.2,0.35)
-            ) 
-plot!(1:4, transpose(store_fixed_effects_estimated),
-            label=["Lambda: 0.1" "Lambda: 0.2" "Lambda: 0.3" "Lambda: 0.4" "Lambda: 0.5" "Lambda: 0.6"],  
-            markershape = :circle, 
-            linetype=:scatter
-            # ylims=(0.2,0.35)
-            )
-plot!(legend=:outertopright)
-
-
-store_fixed_effects_true
-# %%
-# Q9: Correction of mobility bias: THIS IS WRONG
-#---------------------------------------------------------------------
-
-initial_hyper_params = hyper_parameters(30, 10, 0.2, 10, 10_000)
-
-df = gen_dataset(initial_hyper_params,α,ψ,G,H)
-
-df_connected = getConnectedDataSet(df);
-
-df_connected_results = akm_estimation(df_connected);
-
-df_connected_results = sort(df_connected_results,[:i, :k])
-
-D = transpose(indicatormat(df_connected_results.i))
-
-F = transpose(indicatormat(df_connected_results.k))
-
-I_i = ones(size(D)[1],1)
-
-II = diagm(0=>fill(1., size(I_i,1)))
-
-A = II - I_i*inv(transpose(I_i)*I_i)*transpose(I_i)
-
-M_z = II
-
-M_d = II - D*inv(transpose(D)*D)*transpose(D) 
-
-F_tilde = M_z*F 
-
-D_tilde = M_d*D
-
-M_tilde_f = II - F_tilde*(transpose(F_tilde)*F_tilde)*transpose(F_tilde)
-
-Q_tilde_f = M_z*M_tilde_f*M_z
-
-Q_tilde_d = M_z*M_tilde_d*M_z
-
-
-
-# %%
-# Q10: Evidence of Learning:
-#---------------------------------------------------------------------
-
-
-
-
-# %% [markdown]
-# This requires first extracting the large set of firms connected by movers, and then estimating the linear problem with many dummies.
-# %% [markdown]
-# ### Extracting the connected set
-# %% [markdown]
-# Because we are not going to deal with extremely large data-sets, we can use off-the-shelf algorithms to extract the connected set. Use the function `connected_components` from the package `LightGraphs` to extract the connected set from our data. To do so you will need to first construct an adjacency matrix between the firms. 
-# 
-# <span style="color:green">Question 6</span>
-# 
-#  - Extract the connected set and drop firms not in the set (I expect that all firms will be in the set).
-# %% [markdown]
-# ### Estimating worker and firm FEs
-# %% [markdown]
-# This part of the problem set is for you to implement the AKM estimator. As discussed in class, this can be done simply by updating, in turn, the worker FE and the firm FE.
-# 
-# Start by appending 2 new columns `alpha_hat` and `psi_hat` to your data. Then loop over the following:
-# 
-# 1. Update `alpha_hat` by taking the mean within `i` net of firm FE
-# 2. Update `psi_hat` by taking the mean within `fid` net of worker FE
-# 
-# <span style="color:green">Question 7</span>
-# 
-#  - Run the previous steps in a loop, and at each step evaluate how much the total mean square error has changed. Check that is goes down with every step. Stop when the MSE decreases by less than 1e-9.
-# 
-# 
-# Note that you can increase speed by focusing on movers only first.
-# 
 # 
 # %% [markdown]
 # ## Limited mobility bias
