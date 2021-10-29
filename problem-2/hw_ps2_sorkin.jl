@@ -49,10 +49,10 @@ using CategoricalArrays
 using FixedEffectModels
 using Chain
 using DataFramesMeta
-using LightGraphs
+# using LightGraphs
 # using TikzGraphs
 using Optim
-
+using Random
 
 # %% [markdown]
 # ## Constructing Employer-Employee matched data
@@ -81,45 +81,69 @@ struct define_hyper_parameters
     ni::Int # n indiv
 end
 
-
 struct compute_transition_matrix
     ψ::Vector
     G::Array
     H::Array
     v::Array
+    α::Vector
 
     function compute_transition_matrix(parameters::define_parameters, hyper_parameters::define_hyper_parameters)
 
         # setting parameters
         v_sd = parameters.v_sd
         ψ_sd = parameters.ψ_sd 
-        vψ_sd = parameters.vψ_sd 
+        vψ_sd = parameters.vψ_sd
         csort = parameters.csort
         cnetw = parameters.cnetw
         csig = parameters.csig
-
         nk = hyper_parameters.nk
         nl = hyper_parameters.nl
 
 
         # approximate each distribution with some points of support
         # Firm fixed effect:
-        Σ = ones(2,2)
-        Σ[1,2] = vψ_sd
-        Σ[2,1] = vψ_sd
-        ψ = quantile.(MvNormal([0, 0], Σ./2), (1:nk) / (nk + 1)) 
-        # Individual type fixed effect:
-        # α = quantile.(Normal(), (1:nl) / (nl + 1)) * ψ_sd
+        function get_firm_characteristics(vψ_sd)
+            """
+            Input:
+            vψ_sd: Covariance between amenities and firm FE.
+            
+            Output:
+            ψ: Firm fixed effect
+            v_a: Amenity value
+            """
+            Σ = ones(2,2)
+            Σ[1,2] = vψ_sd
+            Σ[2,1] = vψ_sd
+            Φ = rand(MvNormal([0, 0], Σ./2), 100000)'
 
-        # Value of the firm (This will be fixed over time):
-        v_a  = rand(Normal(), (1,nk))
-        v = ψ' .+ v_a # this should be something like firm FE + some amenity v_a
+            ψ = quantile(Φ[:,2], (1:nk) / (nk + 1))
+            v_a = shuffle(quantile(Φ[:,1], (1:nk) / (nk + 1)))
+
+            # Value of the firm (This will be fixed over time):
+            v = ψ .+ v_a # this should be something like firm FE + some amenity v_a
+
+            pr_job_offer = pdf(Normal(0, 1), shuffle(v))
+            pr_job_offer = pr_job_offer./sum(pr_job_offer)
+    
+            return ψ, v_a, v, pr_job_offer
+        end
+        
+        ψ, v_a, v = get_firm_characteristics(vψ_sd)
+
+        # Individual type fixed effect (just for the wage equation):
+        α = quantile.(Normal(), (1:nl) / (nl + 1)) 
+
+
+        pr_death = pdf(Normal(0, 1), shuffle(α))
+        pr_death = pr_death./sum(pr_death)
 
         # Let's create type-specific transition matrices
         # We are going to use joint normals centered on different values
         G = zeros(nl, nk, nk)
         for l in 1:nl, k in 1:nk
-            G[l, k, :] = pdf( Normal(0, csig), v .- cnetw * v[k])
+            # Transition probability weighted by pr of job offer (which is random
+            G[l, k, :] = pr_death[l] .* pdf( Normal(0, csig), v .- cnetw * v[k]) .* pr_job_offer
             G[l, k, :] = G[l, k, :] ./ sum(G[l, k, :])
         end
 
@@ -132,7 +156,7 @@ struct compute_transition_matrix
                 H[l, :] = M * H[l, :]
             end
         end
-        new(ψ, G, H, v)
+        new(ψ, G, H, v, α)
     end
 end
 
@@ -183,10 +207,10 @@ struct simulation_draw
                     kk_new = sample(1:nk, Weights(G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
 
                     if v[kk_past] < v[kk_new] + rand(Gumbel(0, 1))
-                        kk[i,t] = kk_new                                     # Otherwise, remain at same job
-                        spellcount[i,t] = spellcount[i,t-1] + 1                 # Add 1 to spell count
+                        kk[i,t] = kk_new                                    # Otherwise, remain at same job
+                        spellcount[i,t] = spellcount[i,t-1] + 1             # Add 1 to spell count
                     else
-                        kk[i,t] = kk_past                                     # Otherwise, remain at same job
+                        kk[i,t] = kk_past                                   # Otherwise, remain at same job
                         spellcount[i,t] = spellcount[i,t-1]                 # person didn't like the firm too much so he stays
                     end
 
