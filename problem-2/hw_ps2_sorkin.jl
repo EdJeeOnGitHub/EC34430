@@ -115,7 +115,6 @@ struct compute_transition_matrix
             pr_job_offer: Probability of sending a job offer 
             """
             Σ = [v_sd vψ_sd; vψ_sd ψ_sd]
-            
             Φ = rand(MvNormal([0, 0], Σ./2), 100000)'
 
             ψ = quantile(Φ[:,2], (1:nk) / (nk + 1))
@@ -250,10 +249,10 @@ struct simulation_draw
                     end
                 
                 else    # if dies
-                    
+                   # TODO draw new worker $\alpha_i$ 
                     # Replace worker with another starting at random firm:
                     kk[i,t] = sample(1:nk)
-
+                    # TODO not sure if this spellcount is correct
                     spellcount[i,t] = spellcount[i,t-1]                     
 
                 end
@@ -302,7 +301,8 @@ struct simulation_draw
         jj .= getindex.(Ref(contiguous_ids),jj);
 
         #----------------------------------------------------------------------------------------
-
+        # TODO ii is now incorrect as dead individuals are counted as the same 
+        # their successors.
         ii = repeat(1:ni,1,nt)
         tt = repeat((1:nt)',ni,1)
         df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
