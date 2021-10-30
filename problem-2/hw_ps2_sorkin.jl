@@ -114,11 +114,7 @@ struct compute_transition_matrix
             v: Total Firm value
             pr_job_offer: Probability of sending a job offer 
             """
-            Σ = ones(2,2)
-            Σ[1,1] = v_sd
-            Σ[2,2] = ψ_sd
-            Σ[1,2] = vψ_sd
-            Σ[2,1] = vψ_sd
+            Σ = [v_sd vψ_sd; vψ_sd ψ_sd]
             
             Φ = rand(MvNormal([0, 0], Σ./2), 100000)'
 
