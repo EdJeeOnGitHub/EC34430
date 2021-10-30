@@ -233,6 +233,7 @@ sim_params = parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
 sim_hyper_params = hyper_parameters(30, 10, 0.1, 10, 10_000)
 sim_transition_matrix = transition_matrix(sim_params, sim_hyper_params)
 
+
 # %%
 show_plots = false
 if show_plots == true

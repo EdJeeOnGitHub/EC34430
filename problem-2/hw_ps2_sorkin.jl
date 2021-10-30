@@ -45,10 +45,10 @@ using LinearAlgebra
 using StatsBase
 using DataFrames
 using Plots
-using CategoricalArrays
-using FixedEffectModels
+# using CategoricalArrays
+# using FixedEffectModels
 using Chain
-using DataFramesMeta
+# using DataFramesMeta
 # using LightGraphs
 # using TikzGraphs
 using Optim
@@ -68,7 +68,6 @@ struct define_parameters
     v_sd::Float64 # Firm amenity SD
     ψ_sd::Float64 # Firm SD
     vψ_sd::Float64 # Cov(Amenity, Wage) 
-    csort::Float64 # sorting
     cnetw::Float64 # network
     csig::Float64 # cross sectional sd
 end
@@ -76,9 +75,10 @@ end
 struct define_hyper_parameters
     nk::Int # firm types
     nl::Int # worker types
-    λ::Float64 # moving prob
     nt::Int # time period
     ni::Int # n indiv
+    λ::Float64 # moving prob
+    δ::Float64 # death prob
 end
 
 struct compute_transition_matrix
@@ -91,12 +91,12 @@ struct compute_transition_matrix
     function compute_transition_matrix(parameters::define_parameters, hyper_parameters::define_hyper_parameters)
 
         # setting parameters
-        v_sd = parameters.v_sd
-        ψ_sd = parameters.ψ_sd 
+        v_sd  = parameters.v_sd
+        ψ_sd  = parameters.ψ_sd 
         vψ_sd = parameters.vψ_sd
-        csort = parameters.csort
         cnetw = parameters.cnetw
-        csig = parameters.csig
+        csig  = parameters.csig
+
         nk = hyper_parameters.nk
         nl = hyper_parameters.nl
 
@@ -111,40 +111,66 @@ struct compute_transition_matrix
             Output:
             ψ: Firm fixed effect
             v_a: Amenity value
+            v: Total Firm value
+            pr_job_offer: Probability of sending a job offer 
             """
             Σ = ones(2,2)
+            Σ[1,1] = v_sd
+            Σ[2,2] = ψ_sd
             Σ[1,2] = vψ_sd
             Σ[2,1] = vψ_sd
+            
             Φ = rand(MvNormal([0, 0], Σ./2), 100000)'
 
             ψ = quantile(Φ[:,2], (1:nk) / (nk + 1))
+            
             v_a = shuffle(quantile(Φ[:,1], (1:nk) / (nk + 1)))
 
             # Value of the firm (This will be fixed over time):
             v = ψ .+ v_a # this should be something like firm FE + some amenity v_a
 
             pr_job_offer = pdf(Normal(0, 1), shuffle(v))
+            
             pr_job_offer = pr_job_offer./sum(pr_job_offer)
     
             return ψ, v_a, v, pr_job_offer
         end
         
-        ψ, v_a, v = get_firm_characteristics(vψ_sd)
 
         # Individual type fixed effect (just for the wage equation):
-        α = quantile.(Normal(), (1:nl) / (nl + 1)) 
+
+        function get_individual_characteristics()
+            """            
+            Output:
+            α: individual fixed effects
+            pr_death: Probability of death is random.
+            """
+
+            α = quantile.(Normal(), (1:nl) / (nl + 1)) 
+
+            pr_death = pdf(Normal(0, 1), shuffle(α))
+
+            pr_death = pr_death./sum(pr_death)
+    
+            return α, pr_death
+        end
 
 
-        pr_death = pdf(Normal(0, 1), shuffle(α))
-        pr_death = pr_death./sum(pr_death)
+        ψ, v_a, v, pr_job_offer = get_firm_characteristics(vψ_sd)
+
+        α, pr_death = get_individual_characteristics()
+
 
         # Let's create type-specific transition matrices
         # We are going to use joint normals centered on different values
         G = zeros(nl, nk, nk)
+
         for l in 1:nl, k in 1:nk
-            # Transition probability weighted by pr of job offer (which is random
-            G[l, k, :] = pr_death[l] .* pdf( Normal(0, csig), v .- cnetw * v[k]) .* pr_job_offer
-            G[l, k, :] = G[l, k, :] ./ sum(G[l, k, :])
+            # Transition probability weighted by pr of job offer (which is random)
+            G[l, k, :] = pdf( Normal(0, csig), v .- cnetw * v[k])  # Get prob based on firm value
+            G[l, k, :] = G[l, k, :] #.* pr_job_offer # Weight by pr of job offer
+            # G[l, k, :] = G[l, k, :] .* pr_death[l]  # Weight by death probability by type
+            G[l, k, :] = G[l, k, :] ./ sum(G[l, k, :]) # Normalize probability
         end
 
         # We then solve for the stationary distribution over psis for each alpha value
@@ -168,6 +194,7 @@ struct simulation_draw
     transition_matrix::compute_transition_matrix
 
     function simulation_draw(hyper_parameters::define_hyper_parameters, transition_matrix::compute_transition_matrix) 
+        
         α = transition_matrix.α
         ψ = transition_matrix.ψ
         G = transition_matrix.G
@@ -180,6 +207,7 @@ struct simulation_draw
         ni = hyper_parameters.ni
         nt = hyper_parameters.nt
         λ = hyper_parameters.λ
+        δ = hyper_parameters.δ
         w_sigma = 0.2
         
 
@@ -188,37 +216,49 @@ struct simulation_draw
         kk = zeros(Int64, ni, nt) # Firm type
         spellcount = zeros(Int64, ni, nt) # Employment spell
 
-        # Generate worker type (this is constant over time)
-        ll[:,:] .= rand(1:nl,ni)
-        # At time 1, we draw somre random initial firm from stationary distribution H
-        kk[:,1] = [sample(1:nk, Weights(H[l, :])) for l in ll[:,1]]
-
+        
         for i in 1:ni   # Iterate over individuals
-               
-            l = ll[i,1]
+            
+            l = rand(1:nl)
+            ll[i,:] .= l
+            
+            # At time 1, we draw random firm, no stationary dist.
+            kk[i,1] = sample(1:nk)
+
             # Now iterate over time to figure where they are going
             for t in 2:nt
 
                 kk_past = kk[i,t-1]
 
-                if rand() < λ  #Consider λ which determines probability of receiving an offer
+                if rand() > δ  # If doesn't die.
 
-                    # Here person leaves...
-                    kk_new = sample(1:nk, Weights(G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
+                    if rand() < λ  #Consider λ which determines probability of receiving an offer
 
-                    if v[kk_past] < v[kk_new] + rand(Gumbel(0, 1))
-                        kk[i,t] = kk_new                                    # Otherwise, remain at same job
-                        spellcount[i,t] = spellcount[i,t-1] + 1             # Add 1 to spell count
+                        # Here person leaves...
+                        kk_new = sample(1:nk, Weights(G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
+
+                        if v[kk_past] < v[kk_new] + rand(Gumbel(0, 1))
+                            kk[i,t] = kk_new                                    # Otherwise, remain at same job
+                            spellcount[i,t] = spellcount[i,t-1] + 1             # Add 1 to spell count
+                        else
+                            kk[i,t] = kk_past                                   # Otherwise, remain at same job
+                            spellcount[i,t] = spellcount[i,t-1]                 # person didn't like the firm too much so he stays
+                        end
+
                     else
-                        kk[i,t] = kk_past                                   # Otherwise, remain at same job
-                        spellcount[i,t] = spellcount[i,t-1]                 # person didn't like the firm too much so he stays
+
+                        kk[i,t] = kk_past                                     # Otherwise, remain at same job
+                        
+                        spellcount[i,t] = spellcount[i,t-1]                     # Do not add to spell count
+
                     end
-
-                else
-
-                    kk[i,t] = kk_past                                     # Otherwise, remain at same job
+                
+                else    # if dies
                     
-                    spellcount[i,t] = spellcount[i,t-1]                     # Do not add to spell count
+                    # Replace worker with another starting at random firm:
+                    kk[i,t] = sample(1:nk)
+
+                    spellcount[i,t] = spellcount[i,t-1]                     
 
                 end
 
@@ -277,29 +317,20 @@ struct simulation_draw
     end
 end
 
-
 # %%
-sim_parameters = define_parameters(1.0, 1.0, 0.5, 0.2, 0.5, 0.2)
-sim_hyper_parameters = define_hyper_parameters(30, 10, 0.1, 10, 10_000)
+sim_parameters = define_parameters(1.0, 1.0, 0.5, 0.2, 0.2)
+sim_hyper_parameters = define_hyper_parameters(30, 10, 10, 10_000, 0.2, 0.1)
 sim_transition_matrix = compute_transition_matrix(sim_parameters, sim_hyper_parameters)
 
 size(sim_transition_matrix.G)
 size(sim_transition_matrix.H)
 
-transition_matrix  =  sim_transition_matrix
-hyper_parameters  =  sim_hyper_parameters
-parameters = sim_parameters
-
-# %%
-show_plots = false
-if show_plots == true
-    p1 = plot(sim_transition_matrix.G[1, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[1, :, :]", st=:wireframe)
-    p2 = plot(sim_transition_matrix.G[sim_hyper_parameters.nl, :, :], xlabel="Previous Firm", ylabel="Next Firm", zlabel="G[nl, :, :]", st=:wireframe, right_margin = 10Plots.mm) # right_margin makes sure the figure isn't cut off on the right
-    plot(p1, p2, layout = (1, 2), size=[600,300])
-end
 # %%
 sim_draw = simulation_draw(sim_hyper_parameters, sim_transition_matrix)
 sim_df = sim_draw.df
+
+
+
 
 
 # %% [markdown]
