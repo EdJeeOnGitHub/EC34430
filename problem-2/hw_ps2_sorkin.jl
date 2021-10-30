@@ -88,6 +88,7 @@ struct compute_transition_matrix
     v::Array
     α::Vector
 
+
     function compute_transition_matrix(parameters::define_parameters, hyper_parameters::define_hyper_parameters)
 
         # setting parameters
@@ -99,7 +100,6 @@ struct compute_transition_matrix
 
         nk = hyper_parameters.nk
         nl = hyper_parameters.nl
-
 
         # approximate each distribution with some points of support
         # Firm fixed effect:
@@ -115,7 +115,8 @@ struct compute_transition_matrix
             pr_job_offer: Probability of sending a job offer 
             """
             Σ = [v_sd vψ_sd; vψ_sd ψ_sd]
-            Φ = rand(MvNormal([0, 0], Σ./2), 100000)'
+            
+            Φ = rand(MvNormal([0, 0], Σ), 100000)'
 
             ψ = quantile(Φ[:,2], (1:nk) / (nk + 1))
             
@@ -143,9 +144,7 @@ struct compute_transition_matrix
 
             α = quantile.(Normal(), (1:nl) / (nl + 1)) 
 
-            pr_death = pdf(Normal(0, 1), shuffle(α))
-
-            pr_death = pr_death./sum(pr_death)
+            pr_death = rand()
     
             return α, pr_death
         end
@@ -155,7 +154,6 @@ struct compute_transition_matrix
 
         α, pr_death = get_individual_characteristics()
 
-
         # Let's create type-specific transition matrices
         # We are going to use joint normals centered on different values
         G = zeros(nl, nk, nk)
@@ -164,21 +162,17 @@ struct compute_transition_matrix
             # Transition probability weighted by pr of job offer (which is random)
             G[l, k, :] = pdf( Normal(0, csig), v .- cnetw * v[k])  # Get prob based on firm value
             G[l, k, :] = G[l, k, :] #.* pr_job_offer # Weight by pr of job offer
-            # G[l, k, :] = G[l, k, :] .* pr_death[l]  # Weight by death probability by type
             G[l, k, :] = G[l, k, :] ./ sum(G[l, k, :]) # Normalize probability
         end
 
         # We then solve for the stationary distribution over psis for each alpha value
         # We apply a crude fixed point approach
         H = ones(nl, nk) ./ nk
-        for l in 1:nl
-            M = transpose(G[l, :, :])
-            for i in 1:100
-                H[l, :] = M * H[l, :]
-            end
-        end
+
         new(ψ, G, H, v, α)
+
     end
+
 end
 
 
@@ -189,36 +183,44 @@ struct simulation_draw
     transition_matrix::compute_transition_matrix
 
     function simulation_draw(hyper_parameters::define_hyper_parameters, transition_matrix::compute_transition_matrix) 
-        
+
         α = transition_matrix.α
         ψ = transition_matrix.ψ
         G = transition_matrix.G
         H = transition_matrix.H
         v = transition_matrix.v
 
-        # setting parameters
+        # Setting parameters
         nk = hyper_parameters.nk
         nl = hyper_parameters.nl
         ni = hyper_parameters.ni
         nt = hyper_parameters.nt
-        λ = hyper_parameters.λ
-        δ = hyper_parameters.δ
+        λ  = hyper_parameters.λ
+        δ  = hyper_parameters.δ
         w_sigma = 0.2
         
 
         # We simulate a balanced panel
         ll = zeros(Int64, ni, nt) # Worker type
         kk = zeros(Int64, ni, nt) # Firm type
+        id = zeros(Int64, ni, nt) # Individual ID
         spellcount = zeros(Int64, ni, nt) # Employment spell
 
-        
+        id_count = 0
+
         for i in 1:ni   # Iterate over individuals
+
+            id_count += 1
             
+            # At time 1, we draw random type.
             l = rand(1:nl)
-            ll[i,:] .= l
+            ll[i,1] = l   # N x T
             
             # At time 1, we draw random firm, no stationary dist.
             kk[i,1] = sample(1:nk)
+
+            # Insert id of the person:
+            id[i,1] = id_count
 
             # Now iterate over time to figure where they are going
             for t in 2:nt
@@ -227,33 +229,48 @@ struct simulation_draw
 
                 if rand() > δ  # If doesn't die.
 
+                    id[i,t] = id[i,t-1]   #keep the same id
+                    ll[i,t] = l          #keep same worker type
+
                     if rand() < λ  #Consider λ which determines probability of receiving an offer
 
                         # Here person leaves...
                         kk_new = sample(1:nk, Weights(G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
 
                         if v[kk_past] < v[kk_new] + rand(Gumbel(0, 1))
+
                             kk[i,t] = kk_new                                    # Otherwise, remain at same job
                             spellcount[i,t] = spellcount[i,t-1] + 1             # Add 1 to spell count
+                        
                         else
+                            
                             kk[i,t] = kk_past                                   # Otherwise, remain at same job
                             spellcount[i,t] = spellcount[i,t-1]                 # person didn't like the firm too much so he stays
+                        
                         end
 
                     else
 
-                        kk[i,t] = kk_past                                     # Otherwise, remain at same job
-                        
+                        kk[i,t] = kk_past                                       # Otherwise, remain at same job
                         spellcount[i,t] = spellcount[i,t-1]                     # Do not add to spell count
 
                     end
                 
                 else    # if dies
-                   # TODO draw new worker $\alpha_i$ 
-                    # Replace worker with another starting at random firm:
-                    kk[i,t] = sample(1:nk)
-                    # TODO not sure if this spellcount is correct
-                    spellcount[i,t] = spellcount[i,t-1]                     
+
+                    # Fill spot with new guy and guy id 
+                    id_count += 1       
+                    id[i,t] = id_count  
+
+                    #Draw new type for the guy
+                    l = rand(1:nl)      
+                    ll[i,t] = l        
+
+                    # The worker starts at the same firm as the previous guy:
+                    kk[i,t] = kk_past
+
+                    # [TODO] not sure if this spellcount is correct
+                    spellcount[i,t] = 1                     
 
                 end
 
@@ -294,7 +311,9 @@ struct simulation_draw
                     
                     jj[i,t] = new_j
                 end
+
             end
+
         end
         # Make sure firm ids are contiguous
         contiguous_ids = Dict( unique(jj) .=> 1:length(unique(jj))  )
@@ -305,13 +324,20 @@ struct simulation_draw
         # their successors.
         ii = repeat(1:ni,1,nt)
         tt = repeat((1:nt)',ni,1)
-        df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
+        df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], w_id=id[:] , spell=spellcount[:]);
         
         df[!, :lw] = df.α + df.ψ + w_sigma * rand(Normal(), size(df)[1]);
 
         new(df, hyper_parameters, transition_matrix)
+    
     end
+
 end
+
+parameters = sim_parameters
+hyper_parameters = sim_hyper_parameters
+transition_matrix  = sim_transition_matrix
+
 
 # %%
 sim_parameters = define_parameters(1.0, 1.0, 0.5, 0.2, 0.2)
@@ -325,7 +351,9 @@ size(sim_transition_matrix.H)
 sim_draw = simulation_draw(sim_hyper_parameters, sim_transition_matrix)
 sim_df = sim_draw.df
 
+sort(sim_df, :w_id)
 
+unique(sim_df[:,:w_id])
 
 
 
