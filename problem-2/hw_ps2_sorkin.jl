@@ -45,10 +45,10 @@ using LinearAlgebra
 using StatsBase
 using DataFrames
 using Plots
-# using CategoricalArrays
+using CategoricalArrays
 # using FixedEffectModels
 using Chain
-# using DataFramesMeta
+using DataFramesMeta
 # using LightGraphs
 # using TikzGraphs
 using Optim
@@ -66,6 +66,7 @@ using Random
 # %%
 struct define_parameters
     v_sd::Float64 # Firm amenity SD
+    α_sd::Float64 # worker type sd
     ψ_sd::Float64 # Firm SD
     vψ_sd::Float64 # Cov(Amenity, Wage) 
     cnetw::Float64 # network
@@ -93,6 +94,7 @@ struct compute_transition_matrix
 
         # setting parameters
         v_sd  = parameters.v_sd
+        α_sd = parameters.α_sd
         ψ_sd  = parameters.ψ_sd 
         vψ_sd = parameters.vψ_sd
         cnetw = parameters.cnetw
@@ -142,7 +144,7 @@ struct compute_transition_matrix
             pr_death: Probability of death is random.
             """
 
-            α = quantile.(Normal(), (1:nl) / (nl + 1)) 
+            α = quantile.(Normal(), (1:nl) / (nl + 1))*α_sd
 
             pr_death = rand()
     
@@ -334,9 +336,6 @@ struct simulation_draw
 
 end
 
-parameters = sim_parameters
-hyper_parameters = sim_hyper_parameters
-transition_matrix  = sim_transition_matrix
 
 
 # %%
@@ -436,8 +435,9 @@ end
 #Number of movers at the firm, defined as people that moved into the firm at any point in time:
 #Here we can be double (or more) counting returners as new movers for the firm  ...
 
+# N.B. this doesn't work anymore as spell count changes when someone dies.
 moversDataFrame = @chain sim_df begin
-    groupby([:j, :i, :spell]) # Group at the firm, individual, spell level
+    groupby([:j, :w_id, :spell]) # Group at the firm, individual, spell level
     combine(:t => mean)       # Collapse, this column doesn't matter actually
     @transform!(:spell_true = :spell .> 0) # If spell != 0 it means individual moved in (don't care when or if returner)
     groupby(:j) # Group by firm
@@ -445,37 +445,6 @@ moversDataFrame = @chain sim_df begin
     @aside println("On average each firm has $(round(mean(_.spell_true_sum))) movers each period.")
 end
 
-# %% [markdown]
-# 
-
-# %%
-@chain sim_df begin
-    groupby([:j, :i, :spell])
-    transform(nrow => :spell_count)
-    subset(:spell_count => ByRow(spell_count -> spell_count == 0) )
-    # subset(:count => ByRow(count -> count < 10))
-    # subset(:i => ByRow(i -> i == 2))
-end
-    
-
-
-# @chain df begin
-#     sort([:i, :t])
-#     groupby(:i)
-#     transform(:j => lag => :lag_ed)
-# end
-
-
-# end_id = 
-# subset(df, :t => ByRow(t -> t == 10))
-
-# @chain df begin
-#     subset(df, :j => ByRow(j -> j == 1))
-#     subset(df, :i => ByRow(i -> i == 1))
-#     first(_, 5)
-# end
-# first(@subset(df, :i => ByRow(i -> i == 1)))
-# subset(df, :i => ByRow(i -> i == 1))
 
 # %% [markdown]
 # ## Simulating AKM wages and create Event Study plot
@@ -520,17 +489,17 @@ function find_move_year(df, order, sort_id_1, sort_id_2, spell_var)
     return  year_df
 end
 
-
+# %%
 
 
 eventStudyPanel =  @chain sim_df begin
     groupby([:j, :t]) # Group by firm and time 
     transform(:lw => mean) # Obtain wage at that group level
     @transform!(:wage_percentile = cut(:lw_mean, 4)) # Get wage_percentile at same level of agregation
-    groupby([:i, :spell])
+    groupby([:w_id, :spell])
     transform(nrow => :years_at_firm) # Get number of years individual spend at a single firm
-    find_move_year(_, "forward", :i, :t, :spell) # generating event time indicators
-    find_move_year(_, "backward", :i, :t, :spell)
+    find_move_year(_, "forward", :w_id, :t, :spell) # generating event time indicators
+    find_move_year(_, "backward", :w_id, :t, :spell)
 
 
     @aside initialFirmDataFrame = @chain _ begin
@@ -539,13 +508,13 @@ eventStudyPanel =  @chain sim_df begin
 
     subset(:spell => ByRow(==(0)), :years_at_firm_sofar => ByRow(<=(2))) # Generate dataframe for subsequent firm, keep first two years
     append!(initialFirmDataFrame) # Append both dataframes
-    groupby(:i) # group by person 
+    groupby(:w_id) # group by person 
     transform(nrow => :nreps) # and get number of repetitions
     subset(:nreps => ByRow(==(4))) # and get number of repetitions
-    sort([:i,:t]) # sort by i and t to check if it worked out
+    sort([:w_id,:t]) # sort by i and t to check if it worked out
     # Generating event time variable:
-    sort([:i,:t], rev = false) # Sort over time by individual (this helps to get first 2 periods of last firm)
-    groupby([:i])  # by worker and time
+    sort([:w_id,:t], rev = false) # Sort over time by individual (this helps to get first 2 periods of last firm)
+    groupby([:w_id])  # by worker and time
     transform(:dummy .=>  cumsum => :event_time) # Get the number of years spent at a firm so far, but backwards.
 end
 
@@ -621,7 +590,8 @@ function variance_decomposition(df, true_parameters=true)
 
 end
 
-function variance_calibration(parameters::parameters, hyper_parameters::hyper_parameters)
+function variance_calibration(parameters::define_parameters,
+                              hyper_parameters::define_hyper_parameters)
     transition_mat = compute_transition_matrix(parameters, hyper_parameters)
     sim_draw = simulation_draw(hyper_parameters, transition_mat)
 
@@ -631,6 +601,7 @@ end
 
 # %%
 function anon_function(param_list)
+    # parameters(v_sd, ψ_sd, vψ_sd, cnetw, csig)
     parameters = parameters(param_list[1], param_list[2], param_list[3], 0.2, param_list[4], 0.2)
     values = variance_calibration(parameters, sim_hyper_parameters)
     target = [0.084, 0.025, 0.003, 0.138]
