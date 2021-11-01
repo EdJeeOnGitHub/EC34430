@@ -46,7 +46,7 @@ using StatsBase
 using DataFrames
 using Plots
 using CategoricalArrays
-# using FixedEffectModels
+using ShiftedArrays
 using Chain
 using DataFramesMeta
 # using LightGraphs
@@ -339,8 +339,8 @@ end
 
 
 # %%
-sim_parameters = define_parameters(1.0, 1.0, 0.5, 0.2, 0.2)
-sim_hyper_parameters = define_hyper_parameters(30, 10, 10, 10_000, 0.2, 0.1)
+sim_parameters = define_parameters(1.0, 1.0, 1.0, 0.5, 0.2, 0.2)
+sim_hyper_parameters = define_hyper_parameters(30, 10, 10, 10_000, 0.4, 0.1)
 sim_transition_matrix = compute_transition_matrix(sim_parameters, sim_hyper_parameters)
 
 size(sim_transition_matrix.G)
@@ -534,7 +534,7 @@ function generateEventStudy(eventStudyPanel, initial, final)
                             end
                             subset(:wage_percentile => ByRow(==(percentile_cut[initial])), :spell => ByRow(==(0)))
                             append!(finalJob) # Append both dataframes
-                            groupby(:i)
+                            groupby(:w_id)
                             transform(nrow => :nreps)
                             subset(:nreps => ByRow(==(4)))
                             groupby([:wage_percentile, :event_time])
@@ -577,7 +577,10 @@ function variance_decomposition(df, true_parameters=true)
         sig_α = var(df.α)
         sig_ψ = var(df.ψ)
         sig_αψ = 2*cov(df.α, df.ψ)
+        cor_αψ = cor(df.α, df.ψ)
         sig_lw = var(df.lw)
+
+
     else
         sig_α = var(df.α_hat)
         sig_ψ = var(df.ψ_hat)
@@ -586,7 +589,7 @@ function variance_decomposition(df, true_parameters=true)
     end
 
 
-    return [sig_α, sig_ψ, sig_αψ, sig_lw]
+    return [sig_α, sig_ψ, sig_αψ, cor_αψ, sig_lw]
 
 end
 
@@ -599,11 +602,136 @@ function variance_calibration(parameters::define_parameters,
 
 end
 
+# Find all movers defined as those with max spell > 0
+function find_movers(df::DataFrame)
+    move_df = @chain df begin
+       groupby(:w_id)
+       transform(:spell => maximum) 
+       subset(:spell_maximum => x -> x .> 0)
+    end
+
+   return move_df 
+end
+
+
+# Get the next firm the mover is moving to
+# by leading the firm column and extracting 
+# just the firm and next firm as one observation
+function find_firm_links(mover_df::DataFrame)
+    firm_link_df = @chain mover_df begin
+        sort([:w_id, :t])
+        groupby(:w_id)
+        transform(:j => lead => :j_next)
+        transform([:j, :j_next] => .==)
+        subset(:j_j_next_BroadcastFunction => x -> x .== false, skipmissing = true)
+        select(:j, :j_next)
+    end
+    return firm_link_df
+end
+
+function create_M_flows(link_df)
+    M = @chain link_df begin
+        groupby([:j, :j_next])
+        combine(nrow => :count, [:j, :j_next] => ((x, y) -> ("M_" .* string.(y) .*"_" .* string.(x))) => :M)
+    end
+    return M
+end
+
+
 # %%
+
+
+function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame; count = false)
+    adjacency_matrix = zeros(Int, maximum(df.j), maximum(df.j))
+    if count == false
+        firm_link_df[!, "count"] .= 1
+    end
+    for firm_a in unique(df.j), firm_b in unique(df.j)
+        subset_a_df = firm_link_df[(firm_link_df.j .== firm_a) .& (firm_link_df.j_next .== firm_b), :]
+        if size(subset_a_df)[1] != 0
+            adjacency_matrix[firm_b, firm_a] = subset_a_df.count[1]
+        end
+    end
+    return adjacency_matrix
+end
+
+
+function create_fixed_point_matrices(M_df, df)
+    sum_flows = @chain M_df begin
+        groupby(:j)
+        combine(:count => sum)
+        sort(:j)
+    end
+    S_kk = Diagonal(sum_flows.count_sum)
+    M_0 = create_adjacency_matrix(M_df, df, count = true)
+    return S_kk, M_0
+end
+
+
+function create_fixed_point_matrices(df)
+    link_df = find_firm_links(find_movers(df))
+    M_df = create_M_flows(link_df)
+
+    sum_flows = @chain M_df begin
+        groupby(:j)
+        combine(:count => sum)
+        sort(:j)
+    end
+    S_kk = Diagonal(sum_flows.count_sum)
+    M_0 = create_adjacency_matrix(M_df, df, count = true)
+    return S_kk, M_0
+end
+
+
+
+function estimate_rank(S_kk, M_0; tol= 1e-10)
+    N_connected = size(S_kk, 1)
+    S_inv = inv(S_kk)
+    initial_V_EE = fill(1.0, N_connected)*100
+    lhs = S_inv * M_0 * exp.(initial_V_EE)
+    rhs = exp.(initial_V_EE)
+    i = 0
+    max_diff = Inf
+    while max_diff > tol
+        i += 1
+        rhs = lhs
+        lhs = S_inv*M_0 * rhs
+        max_diff = maximum(abs.(lhs .- rhs))
+        println("max diff: $max_diff")
+    end
+    println("Iters: $i")
+    return log.(rhs)
+end
+# %%
+link_df = find_firm_links(find_movers(sim_df))
+
+
+M_df = create_M_flows(link_df)
+
+S_kk, M_0 = create_fixed_point_matrices(sim_df)
+
+rank = estimate_rank(S_kk, M_0)
+
+hcat(inv(S_kk) * M_0 * exp.(rank), exp.(rank))
+
+# %% 
 function anon_function(param_list)
-    # parameters(v_sd, ψ_sd, vψ_sd, cnetw, csig)
-    parameters = parameters(param_list[1], param_list[2], param_list[3], 0.2, param_list[4], 0.2)
+    # parameters(v_sd, \alpha_sd, ψ_sd, vψ_sd, cnetw, csig)
+    parameters = parameters(param_list[1], param_list[2], param_list[3], 0.2, 0.2)
     values = variance_calibration(parameters, sim_hyper_parameters)
+    target_values = [
+        0.51, # variance of person effect 
+        0.14, # variance of employer effect
+        0.10, # 2 cov(person, employer)
+        0.19, # corr(person, employer)
+        0.67, # variance log earnings
+
+        0.400, # V^{EE} and \psi (pearson)
+        0.530, # V^e and \psi (pearson)
+        0.045, # V^{EE} log(size) (pearson)
+        0.151, # V^e log(size)(pearson)
+        0.093  # ψ log size (pearson)
+    ]
     target = [0.084, 0.025, 0.003, 0.138]
     mse = mean((target .- values).^2)
     return mse
@@ -673,35 +801,6 @@ plot(calibrated_transition_matrix.H, xlabel="Worker", ylabel="Firm", zlabel="H",
 
 # %%
 ##### Ed attempt 
-
-
-# Find all movers defined as those with max spell > 0
-function find_movers(df::DataFrame)
-    move_df = @chain df begin
-       groupby(:i)
-       transform(:spell => maximum) 
-       subset(:spell_maximum => x -> x .> 0)
-    end
-
-   return move_df 
-end
-
-
-# Get the next firm the mover is moving to
-# by leading the firm column and extracting 
-# just the firm and next firm as one observation
-function find_firm_links(mover_df::DataFrame)
-    firm_link_df = @chain mover_df begin
-        sort([:i, :t])
-        groupby(:i)
-        transform(:j => lead => :j_next)
-        transform([:j, :j_next] => .==)
-        subset(:j_j_next_BroadcastFunction => x -> x .== false, skipmissing = true)
-        select(:j, :j_next)
-        unique()
-    end
-    return firm_link_df
-end
 
 # Iterate through our firm link df and create a matrix 
 # of links. In R I would model.matrix(a ~ b) but idk how to 
