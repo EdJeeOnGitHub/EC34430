@@ -8,6 +8,7 @@ Pkg.activate(".") # Create new environment in this folder
 # %%
 using Distributions
 using LinearAlgebra
+using Infiltrator
 using StatsBase
 using DataFrames
 using Plots
@@ -123,6 +124,7 @@ struct compute_transition_matrix
             # Transition probability weighted by pr of job offer (which is random)
             G[l, k, :] = pdf( Normal(0, csig), v .- cnetw * v[k])  # Get prob based on firm value
             G[l, k, :] = G[l, k, :] #.* pr_job_offer # Weight by pr of job offer
+            G[l, k, k] = 0 # can't get offer from current place
             G[l, k, :] = G[l, k, :] ./ sum(G[l, k, :]) # Normalize probability
         end
 
@@ -142,6 +144,7 @@ struct simulation_draw
     df::DataFrame
     hyper_parameters::define_hyper_parameters
     transition_matrix::compute_transition_matrix
+    kk::Matrix
 
     function simulation_draw(hyper_parameters::define_hyper_parameters, transition_matrix::compute_transition_matrix) 
 
@@ -197,7 +200,12 @@ struct simulation_draw
 
                         # Here person leaves...
                         kk_new = sample(1:nk, Weights(G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
-
+                        iter_k = 0
+                        while kk_new == kk_past
+                            iter_k += 1
+                            println("iter k: $iter_k")
+                            kk_new = sample(1:nk, Weights(G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
+                        end
                         if v[kk_past] < v[kk_new] + rand(Gumbel(0, 1))
 
                             kk[i,t] = kk_new                                    # Otherwise, remain at same job
@@ -242,7 +250,6 @@ struct simulation_draw
         #------------------------------------------------------------
 
         # This part likely to be the same:
-        
         jj = zeros(Int64, ni, nt) # Firm identifiers
 
         draw_firm_from_type(k) = sample(1:firms_per_type) + (k - 1) * firms_per_type  # This samples firm code conditional on type. 
@@ -266,9 +273,7 @@ struct simulation_draw
                     new_j = draw_firm_from_type(k)            
                     # Make sure the new firm is actually new
                     while new_j == jj[i,t-1]
-                        # update k matrix if need be
-                        kk[i, t] = sample(1:nk)
-                        k = kk[i, t]
+                        @infiltrate
                         new_j = draw_firm_from_type(k)
                     end
                     
@@ -291,24 +296,32 @@ struct simulation_draw
         
         df[!, :lw] = df.α + df.ψ + w_sigma * rand(Normal(), size(df)[1]);
 
-        new(df, hyper_parameters, transition_matrix)
+        new(df, hyper_parameters, transition_matrix, kk)
     
     end
-
 end
 
 
 
 # %%
 sim_parameters = define_parameters(1.0, 1.0, 1.0, 0.5, 0.2, 0.2)
-sim_hyper_parameters = define_hyper_parameters(2, 10, 20, 10_000, 0.7, 0.0, 2)
+sim_hyper_parameters = define_hyper_parameters(4, 10, 20, 10_000, 0.8, 0.2, 1)
 sim_transition_matrix = compute_transition_matrix(sim_parameters, sim_hyper_parameters)
 
 size(sim_transition_matrix.G)
 size(sim_transition_matrix.H)
+nk = 4
+nl = 10
+kk_past = sample(1:nk)
+l = sample(1:nl)
+kk_new = sample(1:nk, Weights(sim_transition_matrix.G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
+println("Current k: $kk_past, new k: $kk_new, current l: $l")
+
+sim_transition_matrix.G
 
 # %%
 sim_draw = simulation_draw(sim_hyper_parameters, sim_transition_matrix)
+
 sim_df = sim_draw.df
 
 # %%
@@ -366,11 +379,6 @@ function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame; count =
     return adjacency_matrix
 end
 
-@chain M_df begin
-    groupby(:j)
-    combine(:count => sum)
-    unique()
-end
 function create_fixed_point_matrices(M_df, df)
     sum_flows = @chain M_df begin
         groupby(:j)
@@ -388,14 +396,15 @@ function create_fixed_point_matrices(df)
     link_df = find_firm_links(find_movers(df))
     M_df = create_M_flows(link_df)
 
-    sum_flows = @chain M_df begin
-        groupby(:j)
-        combine(:count => sum)
-        sort(:j)
-        unique()
-    end
-    S_kk = Diagonal(sum_flows.count_sum)
+    # sum_flows = @chain M_df begin
+    #     groupby(:j)
+    #     combine(:count => sum)
+    #     sort(:j)
+    #     unique()
+    # end
+    # S_kk = Diagonal(sum_flows.count_sum)
     M_0 = create_adjacency_matrix(M_df, df, count = true)
+    S_kk = Diagonal(sum(M_0, dims = 1)[:])
     return S_kk, M_0
 end
 
@@ -432,10 +441,10 @@ end
 
 
 
-function estimate_rank(S_kk, M_0; tol= 1e-10)
+function estimate_rank(S_kk, M_0; tol= 1e-6)
     N_connected = size(S_kk, 1)
     S_inv = inv(S_kk)
-    initial_V_EE = fill(1.0, N_connected)
+    initial_V_EE = fill(0.5, N_connected)
     lhs = S_inv * M_0 * exp.(initial_V_EE)
     rhs = exp.(initial_V_EE)
     i = 0
@@ -446,15 +455,20 @@ function estimate_rank(S_kk, M_0; tol= 1e-10)
         lhs = S_inv*M_0 * rhs
         max_diff = maximum(abs.(lhs .- rhs))
         println("max diff: $max_diff")
+        # if i == 10_000
+        #     println("break")
+        #     break
+        # end
     end
-    println("Iters: $i")
-    return log.(rhs)
+    # println("Iters: $i")
+    return rhs
 end
 # %%
 
 connected_df = create_connected_df(sim_df)
 
 link_df = find_firm_links(find_movers(connected_df))
+
 unique(link_df)
 
 @chain connected_df begin
@@ -467,8 +481,6 @@ M_df
 S_kk, M_0 = create_fixed_point_matrices(sim_df)
 
 rank = estimate_rank(S_kk, M_0)
-
-sim_df
 v_rank = @chain connected_df begin
     groupby(:j)
     combine(:v => unique)
@@ -476,17 +488,23 @@ v_rank = @chain connected_df begin
 end
 
 
-
 rank_df = DataFrame([1:length(rank), rank], [:j, :rank])
-sort!(rank_df, :rank)
 
-v_rank
-rank_df
 
-corspearman(rank_df.rank, v_rank.v_unique)
+comp_df = innerjoin(v_rank, rank_df, on = :j)
 
-sort!(rank_df, :rank)
-hcat(inv(S_kk) * M_0 * exp.(rank), exp.(rank))
+sort(comp_df, :v_unique)
+
+sum(M_0, dims = 1)
+
+cor(comp_df.v_unique, comp_df.rank)
+corspearman(comp_df.v_unique, comp_df.rank)
+
+
+
+
+
+hcat(inv(S_kk) * M_0 * rank, rank)
 
 # %% 
 function anon_function(param_list)
