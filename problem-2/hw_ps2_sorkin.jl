@@ -1,40 +1,6 @@
-# To add a new cell, type '# %%'
-# To add a new markdown cell, type '# %% [markdown]'
-# %% [markdown]
-# # Homework on two-way fixed effects
-# 
-# *29 September, 2021*
-# 
-# The goal of the following homework is to develop our understanding of two-way fixed effect models. 
-# 
-# Related papers:
-#  - the original paper by [Abowd, Kramarz, and Margolis](https://onlinelibrary.wiley.com/doi/abs/10.1111/1468-0262.00020).
-#  - [Andrews et al paper](https://www.jstor.org/stable/30135090)
-#  
-# %% [markdown]
-# ## Ed Notes
-# - k indexes firm/firm type
-# - l indexes worker/worker type
-# %% [markdown]
-# ## Preparing the environment
-
 # %%
 using Pkg
 Pkg.activate(".") # Create new environment in this folder
-
-# first time you need to install dependencies
-# Pkg.add("Distributions")
-# Pkg.add("StatsBase")
-# Pkg.add(["DataFrames","DataFramesMeta","Chain"])
-# Pkg.add("Plots")
-# Pkg.add("CategoricalArrays")
-# Pkg.add("LightGraphs")
-# Pkg.add("Optim")
-# Pkg.add("FixedEffectModels")
-# Pkg.add("Flux")
-
-# past the first time, you only need to instanciate the current folder
-# Pkg.instantiate(); # Updates packages given .toml file
 
 # %% [markdown]
 # We then list our imports
@@ -49,20 +15,12 @@ using CategoricalArrays
 using ShiftedArrays
 using Chain
 using DataFramesMeta
-# using LightGraphs
+using LightGraphs
 # using TikzGraphs
 using Optim
 using Random
 
 # %% [markdown]
-# ## Constructing Employer-Employee matched data
-# %% [markdown]
-# ### Create a mobility matrix
-# 
-# One central piece is to have a network of workers and firms over time. We start by simulating such an object. The rest of the homework will focus on adding wages to this model. As we know from the lectures, a central issue of the network will be the number of movers.
-# 
-# We are going to model the mobility between workers and firms. Given a transition matrix we can solve for a stationary distribution, and then construct our panel from there.
-
 # %%
 struct define_parameters
     v_sd::Float64 # Firm amenity SD
@@ -80,6 +38,7 @@ struct define_hyper_parameters
     ni::Int # n indiv
     λ::Float64 # moving prob
     δ::Float64 # death prob
+    firms_per_type::Int
 end
 
 struct compute_transition_matrix
@@ -102,7 +61,7 @@ struct compute_transition_matrix
 
         nk = hyper_parameters.nk
         nl = hyper_parameters.nl
-
+        firms_per_type = hyper_parameters.firms_per_type
         # approximate each distribution with some points of support
         # Firm fixed effect:
         function get_firm_characteristics(vψ_sd)
@@ -200,7 +159,7 @@ struct simulation_draw
         λ  = hyper_parameters.λ
         δ  = hyper_parameters.δ
         w_sigma = 0.2
-        
+        firms_per_type = hyper_parameters.firms_per_type
 
         # We simulate a balanced panel
         ll = zeros(Int64, ni, nt) # Worker type
@@ -284,7 +243,6 @@ struct simulation_draw
 
         # This part likely to be the same:
         
-        firms_per_type = 15
         jj = zeros(Int64, ni, nt) # Firm identifiers
 
         draw_firm_from_type(k) = sample(1:firms_per_type) + (k - 1) * firms_per_type  # This samples firm code conditional on type. 
@@ -308,6 +266,9 @@ struct simulation_draw
                     new_j = draw_firm_from_type(k)            
                     # Make sure the new firm is actually new
                     while new_j == jj[i,t-1]
+                        # update k matrix if need be
+                        kk[i, t] = sample(1:nk)
+                        k = kk[i, t]
                         new_j = draw_firm_from_type(k)
                     end
                     
@@ -326,7 +287,7 @@ struct simulation_draw
         # their successors.
         ii = repeat(1:ni,1,nt)
         tt = repeat((1:nt)',ni,1)
-        df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], w_id=id[:] , spell=spellcount[:]);
+        df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], v = v[kk[:]], t=tt[:], w_id=id[:] , spell=spellcount[:]);
         
         df[!, :lw] = df.α + df.ψ + w_sigma * rand(Normal(), size(df)[1]);
 
@@ -340,7 +301,7 @@ end
 
 # %%
 sim_parameters = define_parameters(1.0, 1.0, 1.0, 0.5, 0.2, 0.2)
-sim_hyper_parameters = define_hyper_parameters(30, 10, 10, 10_000, 0.4, 0.1)
+sim_hyper_parameters = define_hyper_parameters(2, 10, 20, 10_000, 0.7, 0.0, 2)
 sim_transition_matrix = compute_transition_matrix(sim_parameters, sim_hyper_parameters)
 
 size(sim_transition_matrix.G)
@@ -350,258 +311,7 @@ size(sim_transition_matrix.H)
 sim_draw = simulation_draw(sim_hyper_parameters, sim_transition_matrix)
 sim_df = sim_draw.df
 
-sort(sim_df, :w_id)
-
-unique(sim_df[:,:w_id])
-
-
-
-# %% [markdown]
-# And we can plot the joint distribution of matches
-
 # %%
-if show_plots == true
-    plot(sim_transition_matrix.H, xlabel="Worker", ylabel="Firm", zlabel="H", st=:wireframe)
-end
-
-
-# %% [markdown]
-# <span style="color:green">Question 1</span>
-# 
-#  - Explain what the parameters `cnetw` and  `csort` do.
-# 
-# <span style="color:aqua">
-# They create heterogeneous network and sorting effects for each firm/worker type's transition matrix by changing the density the pdf evaluates to calculate the transition matrix.
-# 
-# </span>
-# %% [markdown]
-# ### Simulate a panel
-# 
-# The next step is to simulate our network given our transition rules.
-
-
-# # %% [markdown]
-# # ### Attach firm ids to types
-# %% [markdown]
-# <span style="color:green">Question 2</span>
-# 
-#  - Explain the last 2 lines, in particular `.=>` and the use of `Ref`. 
-# 
-# <span style="color:aqua">
-# 
-# The initial for-loop in the cell above randomly samples a firm, within each firm type. Suppose there's only one individual and one firm type and five time periods, the sampled firm IDs could be:
-# 3, 3, 4, 4, 4. It would be a bit silly to have firm IDs 3 and 4 with only two firms present in the entire dataset.
-# 
-# 
-# Therefore, the last two lines remap the randomly sampled firm IDs to a new unique firm ID between 1 and the maximum number of firms. That is, ensuring firm ID is contiguous so we don't have 100 firms but a firm with ID 256.  
-# 
-# 
-# 
-# `.=>` creates a pair which is a bit like a `{key:value}` relationship mapping the original IDs to their new contiguous value. The final line remaps the matrix of original firm IDs to their new contiguous firm IDs.
-# 
-# </span>
-# 
-# 
-# 
-# 
-
-
-# %% [markdown]
-# <span style="color:green">Question 3</span>
-# 
-# Use `Chain.jl` and `DataFramesMeta.jl` to computer:
-# 
-#  - mean firm size, in the crossection, expect something like 15.
-#  - mean number of movers per firm in total in our panel.
-# 
-
-# %%
-
-last(sim_df, 500)
-
-
-# %%
-@chain sim_df begin
-    groupby([:j, :t])
-    combine(nrow => :count)
-    groupby(:j)
-    combine(:count => mean)
-    @aside println("On average each firm has $(round(mean(_.count_mean))) observations, averaging across time periods.")
-    first(_, 5)
-end
-
-
-# %%
-#Number of movers at the firm, defined as people that moved into the firm at any point in time:
-#Here we can be double (or more) counting returners as new movers for the firm  ...
-
-# N.B. this doesn't work anymore as spell count changes when someone dies.
-moversDataFrame = @chain sim_df begin
-    groupby([:j, :w_id, :spell]) # Group at the firm, individual, spell level
-    combine(:t => mean)       # Collapse, this column doesn't matter actually
-    @transform!(:spell_true = :spell .> 0) # If spell != 0 it means individual moved in (don't care when or if returner)
-    groupby(:j) # Group by firm
-    combine(:spell_true => sum) # Count number of movers
-    @aside println("On average each firm has $(round(mean(_.spell_true_sum))) movers each period.")
-end
-
-
-# %% [markdown]
-# ## Simulating AKM wages and create Event Study plot
-# %% [markdown]
-# We start with just AKM wages, which is log additive with some noise.
-
-# %%
-
-# %% [markdown]
-# <span style="color:green">Question 4</span>
-# 
-# Before we finish with the simulation code. Use this generated data to create the event study plot from [Card. Heining, and Kline](https://doi.org/10.1093/qje/qjt006):
-# 
-# 1. Compute the mean wage within firm
-# 2. Group firms into quartiles
-# 3. Select workers around a move (2 periods pre, 2 periods post)
-# 4. Compute wages before/after the move for each transition (from each quartile to each quartile)
-# 5. Plot the lines associated with each transition
-
-# %%
-sim_df[!, :dummy] .= 1;
-
-
-#1. Mean wage within firm: 
-function find_move_year(df, order, sort_id_1, sort_id_2, spell_var)
-    if order == "forward"
-        order = true
-        varname = :years_at_firm_sofar
-    end
-
-    if order == "backward" 
-        order = false
-        varname = :years_at_firm_sofar_inverse
-    end
-    
-
-    year_df =  @chain df begin
-        sort([sort_id_1, sort_id_2], rev = order)
-        groupby([sort_id_1, spell_var])
-        transform(:dummy .=> cumsum => varname)
-    end
-    return  year_df
-end
-
-# %%
-
-
-eventStudyPanel =  @chain sim_df begin
-    groupby([:j, :t]) # Group by firm and time 
-    transform(:lw => mean) # Obtain wage at that group level
-    @transform!(:wage_percentile = cut(:lw_mean, 4)) # Get wage_percentile at same level of agregation
-    groupby([:w_id, :spell])
-    transform(nrow => :years_at_firm) # Get number of years individual spend at a single firm
-    find_move_year(_, "forward", :w_id, :t, :spell) # generating event time indicators
-    find_move_year(_, "backward", :w_id, :t, :spell)
-
-
-    @aside initialFirmDataFrame = @chain _ begin
-        subset(:spell => ByRow(==(1)), :years_at_firm_sofar_inverse => ByRow(<=(2))) # Generate dataframe for initial firm, keep last two years (call it initialFirmDataFrame)
-    end
-
-    subset(:spell => ByRow(==(0)), :years_at_firm_sofar => ByRow(<=(2))) # Generate dataframe for subsequent firm, keep first two years
-    append!(initialFirmDataFrame) # Append both dataframes
-    groupby(:w_id) # group by person 
-    transform(nrow => :nreps) # and get number of repetitions
-    subset(:nreps => ByRow(==(4))) # and get number of repetitions
-    sort([:w_id,:t]) # sort by i and t to check if it worked out
-    # Generating event time variable:
-    sort([:w_id,:t], rev = false) # Sort over time by individual (this helps to get first 2 periods of last firm)
-    groupby([:w_id])  # by worker and time
-    transform(:dummy .=>  cumsum => :event_time) # Get the number of years spent at a firm so far, but backwards.
-end
-
-# Define the dictionary with quartile labels to refer when filtering:
-percentile_cut = Dict(1:4 .=> unique(sort(eventStudyPanel.wage_percentile)))
-
-
-# %%
-# Get Card Heining and Kling event Figure:
-# There may be a smart way to do this, here I'm brute forcing it ...
-initial = 1
-final = 4
-function generateEventStudy(eventStudyPanel, initial, final)
-    return  eventStudy =  @chain eventStudyPanel begin
-                            @aside finalJob = @chain _ begin
-                                subset(:wage_percentile => ByRow(==(percentile_cut[final])), :spell => ByRow(==(1)))
-                            end
-                            subset(:wage_percentile => ByRow(==(percentile_cut[initial])), :spell => ByRow(==(0)))
-                            append!(finalJob) # Append both dataframes
-                            groupby(:w_id)
-                            transform(nrow => :nreps)
-                            subset(:nreps => ByRow(==(4)))
-                            groupby([:wage_percentile, :event_time])
-                            combine(:lw => mean)
-                            sort(:event_time)
-    end
-    return eventStudy
-end
-
-
-eventStudySwitchersDown = broadcast(
-    x -> generateEventStudy(eventStudyPanel, 1, x).lw_mean, 
-    [1, 2, 3, 4]
-)
-eventStudySwitchersUp = broadcast(
-    x -> generateEventStudy(eventStudyPanel, 4, x).lw_mean,
-    [1, 2, 3, 4]
-)
-plot(1:4,eventStudySwitchersDown, label=["1 to 1" "1 to 2" "1 to 3" "1 to 4"],markershape = :square)
-plot!(1:4,eventStudySwitchersUp, label =  ["4 to 1 " "4 to 2" "4 to 3" "4 to 4"],markershape = :circle)
-plot!(legend=:outertopright)
-
-# %% [markdown]
-# ## Calibrating the parameters
-# %% [markdown]
-# <span style="color:green">Question 5</span>
-# 
-#  - Pick the parameters `psi_sd`, `alpha_sd`, `csort`, `csig`, and `w_sigma` to roughly match the decomposition in the Card-Heining-Kline paper (note that they often report numbers in standard deviations, not in variances).
-
-# %%
-# Generate function for data generating process, including as arguments parameters
-# we want to calibrate:
-
-# %%
-# Function to compute variance decomposition...
-
-function variance_decomposition(df, true_parameters=true)
-
-    if true_parameters == true
-        sig_α = var(df.α)
-        sig_ψ = var(df.ψ)
-        sig_αψ = 2*cov(df.α, df.ψ)
-        cor_αψ = cor(df.α, df.ψ)
-        sig_lw = var(df.lw)
-
-
-    else
-        sig_α = var(df.α_hat)
-        sig_ψ = var(df.ψ_hat)
-        sig_αψ = 2*cov(df.α_hat, df.ψ_hat)
-        sig_lw = var(df.lw)
-    end
-
-
-    return [sig_α, sig_ψ, sig_αψ, cor_αψ, sig_lw]
-
-end
-
-function variance_calibration(parameters::define_parameters,
-                              hyper_parameters::define_hyper_parameters)
-    transition_mat = compute_transition_matrix(parameters, hyper_parameters)
-    sim_draw = simulation_draw(hyper_parameters, transition_mat)
-
-    return variance_decomposition(sim_draw.df, true)
-
-end
-
 # Find all movers defined as those with max spell > 0
 function find_movers(df::DataFrame)
     move_df = @chain df begin
@@ -632,7 +342,8 @@ end
 function create_M_flows(link_df)
     M = @chain link_df begin
         groupby([:j, :j_next])
-        combine(nrow => :count, [:j, :j_next] => ((x, y) -> ("M_" .* string.(y) .*"_" .* string.(x))) => :M)
+        combine(nrow => :count)
+        unique()
     end
     return M
 end
@@ -655,12 +366,17 @@ function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame; count =
     return adjacency_matrix
 end
 
-
+@chain M_df begin
+    groupby(:j)
+    combine(:count => sum)
+    unique()
+end
 function create_fixed_point_matrices(M_df, df)
     sum_flows = @chain M_df begin
         groupby(:j)
         combine(:count => sum)
         sort(:j)
+        unique()
     end
     S_kk = Diagonal(sum_flows.count_sum)
     M_0 = create_adjacency_matrix(M_df, df, count = true)
@@ -676,10 +392,42 @@ function create_fixed_point_matrices(df)
         groupby(:j)
         combine(:count => sum)
         sort(:j)
+        unique()
     end
     S_kk = Diagonal(sum_flows.count_sum)
     M_0 = create_adjacency_matrix(M_df, df, count = true)
     return S_kk, M_0
+end
+
+function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame)
+    adjacency_matrix = zeros(Int, maximum(df.j), maximum(df.j))
+    for firm_a in unique(df.j), firm_b in unique(df.j)
+        subset_a_df = firm_link_df[(firm_link_df.j .== firm_a) .& (firm_link_df.j_next .== firm_b), :]
+        if size(subset_a_df)[1] != 0
+            adjacency_matrix[firm_a, firm_b] = 1
+            adjacency_matrix[firm_b, firm_a] = 1
+        end
+    end
+    return adjacency_matrix
+end
+
+
+function create_connected_df(df::DataFrame)
+    move_df = find_movers(df)
+    firm_df = find_firm_links(move_df)
+    adjacency_matrix = create_adjacency_matrix(firm_df, move_df)
+
+
+    simple_graph = SimpleGraph(adjacency_matrix);
+
+    connected_network = connected_components(simple_graph)
+
+    connected_set = connected_network[1]
+
+    println("We have only $(length(connected_set)) firms fully connected $(length(connected_set)/maximum(df.j)) of the market...") # Double check we might be wrong...
+
+    df_connected = df[in(connected_set).(df.j),:]
+    return df_connected
 end
 
 
@@ -687,7 +435,7 @@ end
 function estimate_rank(S_kk, M_0; tol= 1e-10)
     N_connected = size(S_kk, 1)
     S_inv = inv(S_kk)
-    initial_V_EE = fill(1.0, N_connected)*100
+    initial_V_EE = fill(1.0, N_connected)
     lhs = S_inv * M_0 * exp.(initial_V_EE)
     rhs = exp.(initial_V_EE)
     i = 0
@@ -703,15 +451,41 @@ function estimate_rank(S_kk, M_0; tol= 1e-10)
     return log.(rhs)
 end
 # %%
-link_df = find_firm_links(find_movers(sim_df))
 
+connected_df = create_connected_df(sim_df)
 
+link_df = find_firm_links(find_movers(connected_df))
+unique(link_df)
+
+@chain connected_df begin
+    groupby(:j)
+    combine(:v => unique)
+end
 M_df = create_M_flows(link_df)
 
+M_df
 S_kk, M_0 = create_fixed_point_matrices(sim_df)
 
 rank = estimate_rank(S_kk, M_0)
 
+sim_df
+v_rank = @chain connected_df begin
+    groupby(:j)
+    combine(:v => unique)
+    sort(:v_unique)
+end
+
+
+
+rank_df = DataFrame([1:length(rank), rank], [:j, :rank])
+sort!(rank_df, :rank)
+
+v_rank
+rank_df
+
+corspearman(rank_df.rank, v_rank.v_unique)
+
+sort!(rank_df, :rank)
 hcat(inv(S_kk) * M_0 * exp.(rank), exp.(rank))
 
 # %% 
