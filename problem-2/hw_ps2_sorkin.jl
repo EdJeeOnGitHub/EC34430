@@ -32,6 +32,7 @@ Pkg.activate(".") # Create new environment in this folder
 # Pkg.add("Optim")
 # Pkg.add("FixedEffectModels")
 # Pkg.add("Flux")
+# Pkg.add("ShiftedArrays")
 
 # past the first time, you only need to instanciate the current folder
 # Pkg.instantiate(); # Updates packages given .toml file
@@ -80,6 +81,7 @@ struct define_hyper_parameters
     ni::Int # n indiv
     λ::Float64 # moving prob
     δ::Float64 # death prob
+    fpt::Float64
 end
 
 struct compute_transition_matrix
@@ -197,6 +199,8 @@ struct simulation_draw
         nl = hyper_parameters.nl
         ni = hyper_parameters.ni
         nt = hyper_parameters.nt
+        firms_per_type = hyper_parameters.fpt
+
         λ  = hyper_parameters.λ
         δ  = hyper_parameters.δ
         w_sigma = 0.2
@@ -284,7 +288,6 @@ struct simulation_draw
 
         # This part likely to be the same:
         
-        firms_per_type = 15
         jj = zeros(Int64, ni, nt) # Firm identifiers
 
         draw_firm_from_type(k) = sample(1:firms_per_type) + (k - 1) * firms_per_type  # This samples firm code conditional on type. 
@@ -337,10 +340,111 @@ struct simulation_draw
 end
 
 
+# Get the next firm the mover is moving to
+# by leading the firm column and extracting 
+# just the firm and next firm as one observation
+function find_firm_links(mover_df::DataFrame)
+    firm_link_df = @chain mover_df begin
+        sort([:w_id, :t])
+        groupby(:w_id)
+        transform(:j => lead => :j_next)
+        transform([:j, :j_next] => ByRow(==) => :j_j_next_BroadcastFunction)
+        subset(:j_j_next_BroadcastFunction => x -> x .== false, skipmissing = true)
+        select(:j, :j_next)
+    end
+    return firm_link_df
+end
+
+function create_M_flows(link_df)
+    M = @chain link_df begin
+        groupby([:j, :j_next])
+        combine(nrow => :count, [:j, :j_next] => ((x, y) -> ("M_" .* string.(y) .*"_" .* string.(x))) => :M)
+    end
+    return M
+end
+
 
 # %%
+
+
+function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame; count = false)
+    adjacency_matrix = zeros(Int, maximum(df.j), maximum(df.j))
+    if count == false
+        firm_link_df[!, "count"] .= 1
+    end
+    for firm_a in unique(df.j), firm_b in unique(df.j)
+        subset_a_df = firm_link_df[(firm_link_df.j .== firm_a) .& (firm_link_df.j_next .== firm_b), :]
+        if size(subset_a_df)[1] != 0
+            adjacency_matrix[firm_b, firm_a] = subset_a_df.count[1]
+        end
+    end
+    return adjacency_matrix
+end
+
+# Find all movers defined as those with max spell > 0
+function find_movers(df::DataFrame)
+    move_df = @chain df begin
+       groupby(:w_id)
+       transform(:spell => maximum) 
+       subset(:spell_maximum => x -> x .> 0)
+    end
+
+   return move_df 
+end
+
+function create_fixed_point_matrices(M_df, df)
+    sum_flows = @chain M_df begin
+        groupby(:j)
+        combine(:count => sum)
+        sort(:j)
+    end
+    S_kk = Diagonal(sum_flows.count_sum)
+    M_0 = create_adjacency_matrix(M_df, df, count = true)
+    return S_kk, M_0
+end
+
+
+function create_fixed_point_matrices(df)
+    link_df = find_firm_links(find_movers(df))
+    M_df = create_M_flows(link_df)
+
+    sum_flows = @chain M_df begin
+        groupby(:j)
+        combine(:count => sum)
+        sort(:j)
+    end
+    S_kk = Diagonal(sum_flows.count_sum)
+    M_0 = create_adjacency_matrix(M_df, df, count = true)
+    return S_kk, M_0
+end
+
+
+
+function estimate_rank(S_kk, M_0; tol= 1e-10)
+    N_connected = size(S_kk, 1)
+    S_inv = inv(S_kk)
+    initial_V_EE = fill(1.0, N_connected)
+    lhs = S_inv * M_0 * exp.(initial_V_EE)
+    rhs = exp.(initial_V_EE)
+    I_M = Matrix(1I, size(M_0))
+    i = 0
+    max_diff = Inf
+    while max_diff > tol
+        i += 1
+        rhs = lhs
+        lhs = S_inv*M_0* rhs
+        max_diff = maximum(abs.(lhs .- rhs))
+        println("max diff: $max_diff")
+    end
+    println("Iters: $i")
+    return log.(rhs)
+end
+
+
+# %% 
+# Execute data generating process
 sim_parameters = define_parameters(1.0, 1.0, 1.0, 0.5, 0.2, 0.2)
-sim_hyper_parameters = define_hyper_parameters(30, 10, 10, 10_000, 0.4, 0.1)
+sim_hyper_parameters = define_hyper_parameters(5, 10, 10, 10_000, 0.4, 0.1, 3)
 sim_transition_matrix = compute_transition_matrix(sim_parameters, sim_hyper_parameters)
 
 size(sim_transition_matrix.G)
@@ -350,9 +454,25 @@ size(sim_transition_matrix.H)
 sim_draw = simulation_draw(sim_hyper_parameters, sim_transition_matrix)
 sim_df = sim_draw.df
 
-sort(sim_df, :w_id)
 
-unique(sim_df[:,:w_id])
+# %% 
+
+link_df = find_firm_links(find_movers(sim_df))
+
+M_df = create_M_flows(link_df)
+
+S_kk, M_0 = create_fixed_point_matrices(sim_df)
+S_kk= Diagonal(reshape(sum(M_0, dims=1), (15,)))
+
+
+rank = estimate_rank(S_kk, M_0)
+
+hcat(inv(S_kk) * M_0 * exp.(rank), exp.(rank))
+
+
+
+# sort(sim_df, :w_id)
+# unique(sim_df[:,:w_id])
 
 
 
@@ -602,117 +722,6 @@ function variance_calibration(parameters::define_parameters,
 
 end
 
-# Find all movers defined as those with max spell > 0
-function find_movers(df::DataFrame)
-    move_df = @chain df begin
-       groupby(:w_id)
-       transform(:spell => maximum) 
-       subset(:spell_maximum => x -> x .> 0)
-    end
-
-   return move_df 
-end
-
-
-# Get the next firm the mover is moving to
-# by leading the firm column and extracting 
-# just the firm and next firm as one observation
-function find_firm_links(mover_df::DataFrame)
-    firm_link_df = @chain mover_df begin
-        sort([:w_id, :t])
-        groupby(:w_id)
-        transform(:j => lead => :j_next)
-        transform([:j, :j_next] => .==)
-        subset(:j_j_next_BroadcastFunction => x -> x .== false, skipmissing = true)
-        select(:j, :j_next)
-    end
-    return firm_link_df
-end
-
-function create_M_flows(link_df)
-    M = @chain link_df begin
-        groupby([:j, :j_next])
-        combine(nrow => :count, [:j, :j_next] => ((x, y) -> ("M_" .* string.(y) .*"_" .* string.(x))) => :M)
-    end
-    return M
-end
-
-
-# %%
-
-
-function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame; count = false)
-    adjacency_matrix = zeros(Int, maximum(df.j), maximum(df.j))
-    if count == false
-        firm_link_df[!, "count"] .= 1
-    end
-    for firm_a in unique(df.j), firm_b in unique(df.j)
-        subset_a_df = firm_link_df[(firm_link_df.j .== firm_a) .& (firm_link_df.j_next .== firm_b), :]
-        if size(subset_a_df)[1] != 0
-            adjacency_matrix[firm_b, firm_a] = subset_a_df.count[1]
-        end
-    end
-    return adjacency_matrix
-end
-
-
-function create_fixed_point_matrices(M_df, df)
-    sum_flows = @chain M_df begin
-        groupby(:j)
-        combine(:count => sum)
-        sort(:j)
-    end
-    S_kk = Diagonal(sum_flows.count_sum)
-    M_0 = create_adjacency_matrix(M_df, df, count = true)
-    return S_kk, M_0
-end
-
-
-function create_fixed_point_matrices(df)
-    link_df = find_firm_links(find_movers(df))
-    M_df = create_M_flows(link_df)
-
-    sum_flows = @chain M_df begin
-        groupby(:j)
-        combine(:count => sum)
-        sort(:j)
-    end
-    S_kk = Diagonal(sum_flows.count_sum)
-    M_0 = create_adjacency_matrix(M_df, df, count = true)
-    return S_kk, M_0
-end
-
-
-
-function estimate_rank(S_kk, M_0; tol= 1e-10)
-    N_connected = size(S_kk, 1)
-    S_inv = inv(S_kk)
-    initial_V_EE = fill(1.0, N_connected)*100
-    lhs = S_inv * M_0 * exp.(initial_V_EE)
-    rhs = exp.(initial_V_EE)
-    i = 0
-    max_diff = Inf
-    while max_diff > tol
-        i += 1
-        rhs = lhs
-        lhs = S_inv*M_0 * rhs
-        max_diff = maximum(abs.(lhs .- rhs))
-        println("max diff: $max_diff")
-    end
-    println("Iters: $i")
-    return log.(rhs)
-end
-# %%
-link_df = find_firm_links(find_movers(sim_df))
-
-
-M_df = create_M_flows(link_df)
-
-S_kk, M_0 = create_fixed_point_matrices(sim_df)
-
-rank = estimate_rank(S_kk, M_0)
-
-hcat(inv(S_kk) * M_0 * exp.(rank), exp.(rank))
 
 # %% 
 function anon_function(param_list)
