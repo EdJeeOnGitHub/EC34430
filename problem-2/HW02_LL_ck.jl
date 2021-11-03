@@ -296,16 +296,25 @@ end
 
 ################### Gen Data ##############
 
-sim_params = simparams(nk = 60)
+sim_params = simparams(nk = 200, ni = 1000)
 df = draw_sim(sim_params)
 
 
-
+# BUMP UP NK AS FRACTION
 
 
 ############## ED EDITS ###################
 df[!, "w_id"] = df.i
 
+
+
+{
+connected_df = lewd.create_connected_df(df)
+S_kk, M_0 = lewd.create_fixed_point_matrices(connected_df)
+show(diag(S_kk))
+find
+
+}
 
 v_hat = estimate_v(df)
 true_v_df = extract_true_v(df)
