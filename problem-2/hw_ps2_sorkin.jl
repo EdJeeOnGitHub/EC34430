@@ -50,8 +50,8 @@ using CategoricalArrays
 using ShiftedArrays
 using Chain
 using DataFramesMeta
-# using LightGraphs
-# using TikzGraphs
+using LightGraphs
+using TikzGraphs
 using Optim
 using Random
 
@@ -120,11 +120,11 @@ struct compute_transition_matrix
             """
             Σ = [v_sd vψ_sd; vψ_sd ψ_sd]
             
-            Φ = rand(MvNormal([0, 0], Σ), 100000)'
-
-            ψ = quantile(Φ[:,2], (1:nk) / (nk + 1))
+            Φ = Normal(0,0.4)
             
-            v_a = shuffle(quantile(Φ[:,1], (1:nk) / (nk + 1)))
+            ψ = quantile.(Φ, (1:nk) / (nk + 1))
+            
+            v_a = shuffle(quantile.(Φ, (1:nk) / (nk + 1)))
 
             # Value of the firm (This will be fixed over time):
             v = ψ .+ v_a # this should be something like firm FE + some amenity v_a
@@ -242,8 +242,10 @@ struct simulation_draw
 
                         # Here person leaves...
                         kk_new = sample(1:nk, Weights(G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
+                        
 
                         if v[kk_past] < v[kk_new] + rand(Gumbel(0, 1))
+                        # if v[kk_past] < v[kk_new] + rand(GeneralizedExtremeValue(0, 1, 1.5))
 
                             kk[i,t] = kk_new                                    # Otherwise, remain at same job
                             spellcount[i,t] = spellcount[i,t-1] + 1             # Add 1 to spell count
@@ -329,9 +331,19 @@ struct simulation_draw
         # their successors.
         ii = repeat(1:ni,1,nt)
         tt = repeat((1:nt)',ni,1)
-        df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], w_id=id[:] , spell=spellcount[:]);
+        df = DataFrame(i=ii[:],         # Individual index
+                        j=jj[:],        # Firm index
+                        l=ll[:],        # Individual index
+                        k=kk[:],        # Firm Type
+                        α=α[ll[:]],     # Individual type fixed effect
+                        ψ=ψ[kk[:]],     # Firm wage fixed effect
+                        v=v[kk[:]],     # Individual type fixed effect
+                        t=tt[:],        # Time subscript
+                        w_id=id[:] ,    # True individual id
+                        spell=spellcount[:]);
         
         df[!, :lw] = df.α + df.ψ + w_sigma * rand(Normal(), size(df)[1]);
+        df[!, :v_a] = df.v - df.ψ ;
 
         new(df, hyper_parameters, transition_matrix)
     
@@ -356,8 +368,8 @@ function find_firm_links(mover_df::DataFrame)
 end
 
 function create_M_flows(link_df)
-    M = @chain link_df begin
-        groupby([:j, :j_next])
+    M = @chain link_df begin        # Use link_df, recall this is moves, so j =/= j_next
+        groupby([:j, :j_next])      # Group by :j and next job
         combine(nrow => :count, [:j, :j_next] => ((x, y) -> ("M_" .* string.(y) .*"_" .* string.(x))) => :M)
     end
     return M
@@ -392,38 +404,44 @@ function find_movers(df::DataFrame)
    return move_df 
 end
 
-function create_fixed_point_matrices(M_df, df)
-    sum_flows = @chain M_df begin
-        groupby(:j)
-        combine(:count => sum)
-        sort(:j)
-    end
-    S_kk = Diagonal(sum_flows.count_sum)
-    M_0 = create_adjacency_matrix(M_df, df, count = true)
-    return S_kk, M_0
-end
+# function create_fixed_point_matrices(M_df, df)
+#     sum_flows = @chain M_df begin
+#         groupby(:j)
+#         combine(:count => sum)
+#         sort(:j)
+#     end
+#     S_kk = Diagonal(sum_flows.count_sum)
+#     M_0 = create_adjacency_matrix(M_df, df, count = true)
+#     return S_kk, M_0
+# end
 
 
 function create_fixed_point_matrices(df)
+
     link_df = find_firm_links(find_movers(df))
+
     M_df = create_M_flows(link_df)
 
-    sum_flows = @chain M_df begin
-        groupby(:j)
-        combine(:count => sum)
-        sort(:j)
-    end
-    S_kk = Diagonal(sum_flows.count_sum)
+    # sum_flows = @chain M_df begin
+    #     groupby(:j)
+    #     combine(:count => sum)
+    #     sort(:j)
+    # end
+    
+    # S_kk = Diagonal(sum_flows.count_sum)
+    
     M_0 = create_adjacency_matrix(M_df, df, count = true)
+
+    S_kk = Diagonal(reshape(sum(M_0, dims=1), (size(M_0,1),)))
+
     return S_kk, M_0
 end
-
 
 
 function estimate_rank(S_kk, M_0; tol= 1e-10)
     N_connected = size(S_kk, 1)
     S_inv = inv(S_kk)
-    initial_V_EE = fill(1.0, N_connected)
+    initial_V_EE = rand(Normal(), N_connected)
     lhs = S_inv * M_0 * exp.(initial_V_EE)
     rhs = exp.(initial_V_EE)
     I_M = Matrix(1I, size(M_0))
@@ -441,10 +459,46 @@ function estimate_rank(S_kk, M_0; tol= 1e-10)
 end
 
 
+function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame)
+    adjacency_matrix = zeros(Int, maximum(df.j), maximum(df.j))
+    for firm_a in unique(df.j), firm_b in unique(df.j)
+        subset_a_df = firm_link_df[(firm_link_df.j .== firm_a) .& (firm_link_df.j_next .== firm_b), :]
+        if size(subset_a_df)[1] != 0
+            adjacency_matrix[firm_a, firm_b] = 1
+            adjacency_matrix[firm_b, firm_a] = 1
+        end
+    end
+    return adjacency_matrix
+end
+
+
+function create_connected_df(df::DataFrame)
+
+    move_df = find_movers(df)
+
+    firm_df = find_firm_links(move_df)
+
+    adjacency_matrix = create_adjacency_matrix(firm_df, move_df)
+
+    simple_graph = SimpleGraph(adjacency_matrix);
+
+    connected_network = connected_components(simple_graph)
+
+    connected_set = connected_network[1]
+
+    println("We have only $(length(connected_set)) firms fully connected $(length(connected_set)/maximum(df.j)) of the market...") # Double check we might be wrong...
+
+    df_connected = df[in(connected_set).(df.j),:]
+
+    return df_connected
+
+end
+
+
 # %% 
 # Execute data generating process
 sim_parameters = define_parameters(1.0, 1.0, 1.0, 0.5, 0.2, 0.2)
-sim_hyper_parameters = define_hyper_parameters(5, 10, 10, 10_000, 0.4, 0.1, 3)
+sim_hyper_parameters = define_hyper_parameters(10, 10, 10, 10_0000, 0.4, 0.3, 10)
 sim_transition_matrix = compute_transition_matrix(sim_parameters, sim_hyper_parameters)
 
 size(sim_transition_matrix.G)
@@ -453,28 +507,20 @@ size(sim_transition_matrix.H)
 # %%
 sim_draw = simulation_draw(sim_hyper_parameters, sim_transition_matrix)
 sim_df = sim_draw.df
-
+df_connected = create_connected_df(sim_df)
 
 # %% 
-
-link_df = find_firm_links(find_movers(sim_df))
-
-M_df = create_M_flows(link_df)
-
-S_kk, M_0 = create_fixed_point_matrices(sim_df)
-S_kk= Diagonal(reshape(sum(M_0, dims=1), (15,)))
-
+link_df     = find_firm_links(find_movers(sim_df))
+M_df        = create_M_flows(link_df)
+S_kk, M_0   = create_fixed_point_matrices(sim_df)
 
 rank = estimate_rank(S_kk, M_0)
 
 hcat(inv(S_kk) * M_0 * exp.(rank), exp.(rank))
 
+true_v = sort(unique(sim_df[:,[:j, :v, :v_a]]),:j)
 
-
-# sort(sim_df, :w_id)
-# unique(sim_df[:,:w_id])
-
-
+scatter(true_v[:,:v], rank)
 
 # %% [markdown]
 # And we can plot the joint distribution of matches
@@ -814,36 +860,6 @@ plot(calibrated_transition_matrix.H, xlabel="Worker", ylabel="Firm", zlabel="H",
 # Iterate through our firm link df and create a matrix 
 # of links. In R I would model.matrix(a ~ b) but idk how to 
 # do that here
-function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame)
-    adjacency_matrix = zeros(Int, maximum(df.j), maximum(df.j))
-    for firm_a in unique(df.j), firm_b in unique(df.j)
-        subset_a_df = firm_link_df[(firm_link_df.j .== firm_a) .& (firm_link_df.j_next .== firm_b), :]
-        if size(subset_a_df)[1] != 0
-            adjacency_matrix[firm_a, firm_b] = 1
-            adjacency_matrix[firm_b, firm_a] = 1
-        end
-    end
-    return adjacency_matrix
-end
-
-
-function create_connected_df(df::DataFrame)
-    move_df = find_movers(df)
-    firm_df = find_firm_links(move_df)
-    adjacency_matrix = create_adjacency_matrix(firm_df, move_df)
-
-
-    simple_graph = SimpleGraph(adjacency_matrix);
-
-    connected_network = connected_components(simple_graph)
-
-    connected_set = connected_network[1]
-
-    println("We have only $(length(connected_set)) firms fully connected $(length(connected_set)/maximum(df.j)) of the market...") # Double check we might be wrong...
-
-    df_connected = df[in(connected_set).(df.j),:]
-    return df_connected
-end
 
 
 # %%
