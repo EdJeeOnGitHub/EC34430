@@ -21,6 +21,9 @@ using LightGraphs
 using Optim
 using Random
 
+include("./estimation-code.jl")
+using .lewd
+
 # %% [markdown]
 # %%
 struct define_parameters
@@ -48,7 +51,6 @@ struct compute_transition_matrix
     H::Array
     v::Array
     α::Vector
-
 
     function compute_transition_matrix(parameters::define_parameters, hyper_parameters::define_hyper_parameters)
 
@@ -82,7 +84,7 @@ struct compute_transition_matrix
 
             ψ = quantile(Φ[:,2], (1:nk) / (nk + 1))
             
-            v_a = shuffle(quantile(Φ[:,1], (1:nk) / (nk + 1)))
+            v_a = quantile(Φ[:,1], (1:nk) / (nk + 1))
 
             # Value of the firm (This will be fixed over time):
             v = ψ .+ v_a # this should be something like firm FE + some amenity v_a
@@ -180,7 +182,7 @@ struct simulation_draw
             l = rand(1:nl)
             ll[i,1] = l   # N x T
             
-            # At time 1, we draw random firm, no stationary dist.
+           # At time 1, we draw random firm, no stationary dist.
             kk[i,1] = sample(1:nk)
 
             # Insert id of the person:
@@ -199,27 +201,25 @@ struct simulation_draw
                     if rand() < λ  #Consider λ which determines probability of receiving an offer
 
                         # Here person leaves...
-                        kk_new = sample(1:nk, Weights(G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
-                        iter_k = 0
+
+                        
+                        # For now get job offer from firms at random
+                        ws = fill(1.0/(nk-1), nk)
+                        ws[kk_past] = 0
+                        # kk_new = sample(1:nk, Weights(G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
+                        kk_new = sample(1:nk, Weights(ws))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
                         while kk_new == kk_past
-                            iter_k += 1
-                            println("iter k: $iter_k")
                             kk_new = sample(1:nk, Weights(G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
+                            kk_new = sample(1:nk, Weights(ws))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
                         end
                         if v[kk_past] < v[kk_new] + rand(Gumbel(0, 1))
-
                             kk[i,t] = kk_new                                    # Otherwise, remain at same job
                             spellcount[i,t] = spellcount[i,t-1] + 1             # Add 1 to spell count
-                        
                         else
-                            
                             kk[i,t] = kk_past                                   # Otherwise, remain at same job
                             spellcount[i,t] = spellcount[i,t-1]                 # person didn't like the firm too much so he stays
-                        
                         end
-
                     else
-
                         kk[i,t] = kk_past                                       # Otherwise, remain at same job
                         spellcount[i,t] = spellcount[i,t-1]                     # Do not add to spell count
 
@@ -230,17 +230,12 @@ struct simulation_draw
                     # Fill spot with new guy and guy id 
                     id_count += 1       
                     id[i,t] = id_count  
-
                     #Draw new type for the guy
                     l = rand(1:nl)      
                     ll[i,t] = l        
-
                     # The worker starts at the same firm as the previous guy:
                     kk[i,t] = kk_past
-
-                    # [TODO] not sure if this spellcount is correct
-                    spellcount[i,t] = 1                     
-
+                    spellcount[i,t] = 0                     
                 end
 
             end
@@ -250,46 +245,13 @@ struct simulation_draw
         #------------------------------------------------------------
 
         # This part likely to be the same:
-        jj = zeros(Int64, ni, nt) # Firm identifiers
+        # we remove industries so jj == kk 
+        jj = kk # Firm identifiers
 
-        draw_firm_from_type(k) = sample(1:firms_per_type) + (k - 1) * firms_per_type  # This samples firm code conditional on type. 
-
-        for i in 1:ni
-            
-            # Extract firm type
-            k = kk[i,1]
-            
-            # We draw the firm (one of firms_per_type in given group)
-            jj[i,1] = draw_firm_from_type(k)
-            
-            for t in 2:nt
-                if spellcount[i,t] == spellcount[i,t-1]
-                    # We keep the firm the same
-                    jj[i,t] = jj[i,t-1]
-                else
-                    # We draw a new firm
-                    k = kk[i,t]
-                    
-                    new_j = draw_firm_from_type(k)            
-                    # Make sure the new firm is actually new
-                    while new_j == jj[i,t-1]
-                        @infiltrate
-                        new_j = draw_firm_from_type(k)
-                    end
-                    
-                    jj[i,t] = new_j
-                end
-
-            end
-
-        end
-        # Make sure firm ids are contiguous
         contiguous_ids = Dict( unique(jj) .=> 1:length(unique(jj))  )
         jj .= getindex.(Ref(contiguous_ids),jj);
 
         #----------------------------------------------------------------------------------------
-        # TODO ii is now incorrect as dead individuals are counted as the same 
-        # their successors.
         ii = repeat(1:ni,1,nt)
         tt = repeat((1:nt)',ni,1)
         df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], α=α[ll[:]], ψ=ψ[kk[:]], v = v[kk[:]], t=tt[:], w_id=id[:] , spell=spellcount[:]);
@@ -304,207 +266,87 @@ end
 
 
 # %%
-sim_parameters = define_parameters(1.0, 1.0, 1.0, 0.5, 0.2, 0.2)
-sim_hyper_parameters = define_hyper_parameters(4, 10, 20, 10_000, 0.8, 0.2, 1)
+Random.seed!(1234);
+sim_parameters = define_parameters(2.0, 1.0, 1.0, 0.1, 0.2, 0.2)
+sim_hyper_parameters = define_hyper_parameters(4, 10, 10, 100_000, 0.8, 0.2, 1)
 sim_transition_matrix = compute_transition_matrix(sim_parameters, sim_hyper_parameters)
-
-size(sim_transition_matrix.G)
-size(sim_transition_matrix.H)
-nk = 4
-nl = 10
-kk_past = sample(1:nk)
-l = sample(1:nl)
-kk_new = sample(1:nk, Weights(sim_transition_matrix.G[l, kk_past, :]))     # Get random firm type that makes the offer pr. G | kk[i,t-1] and weighted by vacancy rate.
-println("Current k: $kk_past, new k: $kk_new, current l: $l")
-
-sim_transition_matrix.G
-
 # %%
 sim_draw = simulation_draw(sim_hyper_parameters, sim_transition_matrix)
-
 sim_df = sim_draw.df
 
 # %%
-# Find all movers defined as those with max spell > 0
-function find_movers(df::DataFrame)
-    move_df = @chain df begin
-       groupby(:w_id)
-       transform(:spell => maximum) 
-       subset(:spell_maximum => x -> x .> 0)
-    end
-
-   return move_df 
-end
-
-
-# Get the next firm the mover is moving to
-# by leading the firm column and extracting 
-# just the firm and next firm as one observation
-function find_firm_links(mover_df::DataFrame)
-    firm_link_df = @chain mover_df begin
-        sort([:w_id, :t])
-        groupby(:w_id)
-        transform(:j => lead => :j_next)
-        transform([:j, :j_next] => .==)
-        subset(:j_j_next_BroadcastFunction => x -> x .== false, skipmissing = true)
-        select(:j, :j_next)
-    end
-    return firm_link_df
-end
-
-function create_M_flows(link_df)
-    M = @chain link_df begin
-        groupby([:j, :j_next])
-        combine(nrow => :count)
-        unique()
-    end
-    return M
-end
-
-
-# %%
-
-
-function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame; count = false)
-    adjacency_matrix = zeros(Int, maximum(df.j), maximum(df.j))
-    if count == false
-        firm_link_df[!, "count"] .= 1
-    end
-    for firm_a in unique(df.j), firm_b in unique(df.j)
-        subset_a_df = firm_link_df[(firm_link_df.j .== firm_a) .& (firm_link_df.j_next .== firm_b), :]
-        if size(subset_a_df)[1] != 0
-            adjacency_matrix[firm_b, firm_a] = subset_a_df.count[1]
-        end
-    end
-    return adjacency_matrix
-end
-
-function create_fixed_point_matrices(M_df, df)
-    sum_flows = @chain M_df begin
-        groupby(:j)
-        combine(:count => sum)
-        sort(:j)
-        unique()
-    end
-    S_kk = Diagonal(sum_flows.count_sum)
-    M_0 = create_adjacency_matrix(M_df, df, count = true)
-    return S_kk, M_0
-end
-
-
-function create_fixed_point_matrices(df)
-    link_df = find_firm_links(find_movers(df))
-    M_df = create_M_flows(link_df)
-
-    # sum_flows = @chain M_df begin
-    #     groupby(:j)
-    #     combine(:count => sum)
-    #     sort(:j)
-    #     unique()
-    # end
-    # S_kk = Diagonal(sum_flows.count_sum)
-    M_0 = create_adjacency_matrix(M_df, df, count = true)
-    S_kk = Diagonal(sum(M_0, dims = 1)[:])
-    return S_kk, M_0
-end
-
-function create_adjacency_matrix(firm_link_df::DataFrame, df::DataFrame)
-    adjacency_matrix = zeros(Int, maximum(df.j), maximum(df.j))
-    for firm_a in unique(df.j), firm_b in unique(df.j)
-        subset_a_df = firm_link_df[(firm_link_df.j .== firm_a) .& (firm_link_df.j_next .== firm_b), :]
-        if size(subset_a_df)[1] != 0
-            adjacency_matrix[firm_a, firm_b] = 1
-            adjacency_matrix[firm_b, firm_a] = 1
-        end
-    end
-    return adjacency_matrix
-end
-
-
-function create_connected_df(df::DataFrame)
-    move_df = find_movers(df)
-    firm_df = find_firm_links(move_df)
-    adjacency_matrix = create_adjacency_matrix(firm_df, move_df)
-
-
-    simple_graph = SimpleGraph(adjacency_matrix);
-
-    connected_network = connected_components(simple_graph)
-
-    connected_set = connected_network[1]
-
-    println("We have only $(length(connected_set)) firms fully connected $(length(connected_set)/maximum(df.j)) of the market...") # Double check we might be wrong...
-
-    df_connected = df[in(connected_set).(df.j),:]
-    return df_connected
-end
-
-
-
-function estimate_rank(S_kk, M_0; tol= 1e-6)
-    N_connected = size(S_kk, 1)
-    S_inv = inv(S_kk)
-    initial_V_EE = fill(0.5, N_connected)
-    lhs = S_inv * M_0 * exp.(initial_V_EE)
-    rhs = exp.(initial_V_EE)
-    i = 0
-    max_diff = Inf
-    while max_diff > tol
-        i += 1
-        rhs = lhs
-        lhs = S_inv*M_0 * rhs
-        max_diff = maximum(abs.(lhs .- rhs))
-        println("max diff: $max_diff")
-        # if i == 10_000
-        #     println("break")
-        #     break
-        # end
-    end
-    # println("Iters: $i")
-    return rhs
-end
-# %%
-
-connected_df = create_connected_df(sim_df)
-
-link_df = find_firm_links(find_movers(connected_df))
-
-unique(link_df)
-
-@chain connected_df begin
-    groupby(:j)
-    combine(:v => unique)
-end
-M_df = create_M_flows(link_df)
+connected_df = lewd.create_connected_df(sim_df)
+link_df = lewd.find_firm_links(lewd.find_movers(connected_df))
+M_df = lewd.create_M_flows(link_df)
+S_kk, M_0 = lewd.create_fixed_point_matrices(connected_df)
+S_kk
 
 M_df
-S_kk, M_0 = create_fixed_point_matrices(sim_df)
 
-rank = estimate_rank(S_kk, M_0)
+# %%
+rank = lewd.estimate_rank(S_kk, M_0)
+# %%
 v_rank = @chain connected_df begin
     groupby(:j)
     combine(:v => unique)
     sort(:v_unique)
 end
 
-
-rank_df = DataFrame([1:length(rank), rank], [:j, :rank])
+rank_df = DataFrame([1:length(rank), log.(rank)], [:j, :rank])
 
 
 comp_df = innerjoin(v_rank, rank_df, on = :j)
-
-sort(comp_df, :v_unique)
-
-sum(M_0, dims = 1)
-
+comp_df[!, "s_kk"] = diag(S_kk)
+sort(comp_df, :s_kk)
+# %%
 cor(comp_df.v_unique, comp_df.rank)
 corspearman(comp_df.v_unique, comp_df.rank)
+# %%
+cor(comp_df.v_unique, comp_df.s_kk)
+corspearman(comp_df.v_unique, comp_df.s_kk)
+comp_df
 
 
+# %%
+
+function estimate_v(df)
+    connected_df = lewd.create_connected_df(df)
+    S_kk, M_0 = lewd.create_fixed_point_matrices(connected_df)
+    v_hat = lewd.estimate_rank(S_kk, M_0)
+    return v_hat
+end
+
+function sim_many_times(N)
+    comp_vec = Vector{DataFrame}(undef, N)
+    for i in 1:N
+        sim_i = simulation_draw(sim_hyper_parameters, sim_transition_matrix)
+        sim_i_df = sim_i.df
+
+        v_rank = @chain connected_df begin
+            groupby(:j)
+            combine(:v => unique)
+            sort(:v_unique)
+        end
+        v_hat = estimate_v(sim_i_df)
+        rank_df = DataFrame([1:length(v_hat), v_hat], [:j, :rank])
 
 
+        comp_df = innerjoin(v_rank, rank_df, on = :j)
+        comp_df[!, "draw_n"] .= i
+        comp_vec[i] = comp_df
+    end
+    return comp_vec
+end
 
-hcat(inv(S_kk) * M_0 * rank, rank)
+many_sim_df = reduce(vcat, sim_many_times(100))
+
+
+cor_df = @chain many_sim_df begin
+    groupby(:draw_n)
+    combine([:v_unique, :rank] => ((x, y) -> cor(x, y)) => :cor,
+            [:v_unique, :rank] => ((x, y) -> corspearman(x, y)) => :rank_cor)
+end
+histogram(cor_df.rank_cor, bins = 10)
 
 # %% 
 function anon_function(param_list)
