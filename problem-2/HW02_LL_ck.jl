@@ -3,23 +3,9 @@
 ################################################################################
 
 # Preparing environment ########################################################
-
+# %%
 using Pkg
 Pkg.activate(".") # Create new environment in this folder 
-# only need to activate once
-
-# Need to re-install with every new environment
-# Pkg.add(["Distributions","StatsBase"])
-# Pkg.add(["DataFrames","DataFramesMeta","Chain"])
-# Pkg.add(["Plots","Random","Missings"])
-# Pkg.add(["ShiftedArrays","CategoricalArrays"])
-# Pkg.add("Optim")
-# Pkg.add(["SparseArrays","LightGraphs"])
-# Pkg.add("GLM")
-
-# Pkg.instantiate() # don't need to do this past first time
-# only run if copying someone else's project and they've provided toml files 
-
 # import packages 
 using Distributions
 using LinearAlgebra
@@ -33,18 +19,17 @@ using Chain
 using DataFramesMeta
 using SparseArrays
 using LightGraphs
-# using GLM
-
 # Create worker and firm types and initial covariance matrix ###################
-
+# %%
 struct simparams 
-   nk::Int
-   nl::Int
-
+    nk::Int
+    nl::Int
     nt::Int  
     ni::Int # number of workers at any given time period 
-    function simparams(; nk=50, nl=10, nt=20, ni = 10_000)
-        new(nk, nl, nt, ni) 
+    fpt::Int
+    λ::Float64
+    function simparams(; nk=50, nl=10, nt=10, ni = 10_000, fpt = 4, λ = 0.5)
+        new(nk, nl, nt, ni, fpt, λ) 
     end
 end
 
@@ -101,8 +86,9 @@ function f_initdist(ψ, α; csort::Real=0.5, csig::Real=0.5,
     return G 
 end  # f_initdist
 # function for moving decision
-function f_simpanel(G,v,f, sim_params::simparams; λ::Real=0.25, δ::Real=0.02)
+function f_simpanel(G,v,f, sim_params::simparams; δ::Real=0.02)
     nk, nl, nt, ni = sim_params.nk, sim_params.nl, sim_params.nt, sim_params.ni
+    λ = sim_params.λ
     # We simulate a balanced panel
     ii = repeat(1:ni, 1, nt)  # Worker ID
     ll = zeros(Int64, ni, nt) # Worker type
@@ -193,9 +179,9 @@ function f_assign_firmid(ii,kk,ni,nt, nk, fpt, spellcount)
                 # Make sure the new firm is actually new 
                 while new_j == jj[i,t-1]  
                     new_j = draw_firm_from_type(k, fpt)
-                    ws = fill(1.0/(nk-1), nk)
-                    ws[k] = 0
-                    new_j = sample(1:nk, Weights(ws))
+                    # ws = fill(1.0/(nk-1), nk)
+                    # ws[k] = 0
+                    # new_j = sample(1:nk, Weights(ws))
                 end
 
                 jj[i,t] = new_j
@@ -213,21 +199,17 @@ end  # f_assign_firmid
 function f_gen_df(ni, nt, ll, jj,kk,α,ψ,spellcount, vv)
     ii = repeat(1:ni,1,nt)     # ni x nt
     tt = repeat((1:nt)',ni,1)  # ni x nt
-    df = DataFrame(i=ii[:], j=jj[:], l=ll[:], k=kk[:], v = vv[:],
-        α=α[ll[:]], ψ=ψ[kk[:]], t=tt[:], spell=spellcount[:]);
-    # note: ll[i] gets worker type of worker i
-    # so α[ll[i]] gets worker effect (depends on type) of worker i
-
-    # Mark Movers
-    # df = @chain df begin
-    #     @orderby(:i,:t)  # individual 1, all periods, then individual 2, all periods, etc.
-    #     groupby([:i])    # creates gdf, grouped by i (so ni groups)
-    #     @transform(:j_l1 = lag(:j,1)) 
-
-    #     @transform(@byrow :imov = ((:t.!= 1).&(:j.!=:j_l1)) ? 1 : 0) # Mark movers
-    #     # if t > 1 and worker's curent firm is not the previous firm, imov = 1
-    #     # else imov = 0 (so imov=0 for everyone at t=1)
-    # end
+    df = DataFrame(
+        i=ii[:], 
+        j=jj[:], 
+        l=ll[:], 
+        k=kk[:], 
+        v = vv[:],
+        α=α[ll[:]], 
+        ψ=ψ[kk[:]], 
+        t=tt[:], 
+        spell=spellcount[:]);
+    df[!, "w_id"] = df.i
     return df
 end  # f_gen_df
 
@@ -238,6 +220,7 @@ Random.seed!(global_seed)
 
 function draw_sim(sim_params::simparams)
     nk, nl, nt, ni = sim_params.nk, sim_params.nl, sim_params.nt, sim_params.ni
+    fpt = sim_params.fpt
     # number of types
     α = f_wkreffect(nwkr=nl)
 
@@ -261,18 +244,17 @@ function draw_sim(sim_params::simparams)
 
 
     # number of firms per type 
-    firms_per_type = 1
 
     # this fn randomly draws an id based on firm type
 
-    jj = f_assign_firmid(ii,kk,ni,nt,nk, firms_per_type, spellcount)
+    jj = f_assign_firmid(ii,kk,ni,nt,nk, fpt, spellcount)
 
 
     df = f_gen_df(ni, nt,ll,  jj,kk,α,ψ,spellcount, vv)
     return df
 end
 
-
+# %%
 include("./estimation-code.jl")
 using .lewd
 
@@ -288,53 +270,100 @@ function extract_true_v(df)
     v_rank = @chain df begin
         groupby(:j)
         combine(:v => unique)
-        sort(:v_unique)
     end
     return v_rank
 end
 
 
 ################### Gen Data ##############
-
-sim_params = simparams(nk = 200, ni = 1000)
+# %%
+sim_params = simparams(nk = 4, ni = 50_000, fpt = 4)
 df = draw_sim(sim_params)
 
+# %%
 
 # BUMP UP NK AS FRACTION
 
 
 ############## ED EDITS ###################
-df[!, "w_id"] = df.i
-
-
-
-{
-connected_df = lewd.create_connected_df(df)
-S_kk, M_0 = lewd.create_fixed_point_matrices(connected_df)
-show(diag(S_kk))
-find
-
-}
 
 v_hat = estimate_v(df)
 true_v_df = extract_true_v(df)
 
 
-v_hat_df = DataFrame([1:length(v_hat), v_hat], [:j, :rank])
+v_hat_df = DataFrame([1:length(v_hat), v_hat], [:j, :v_hat])
 
 
 comp_df = innerjoin(true_v_df, v_hat_df, on = :j)
 
 
-println("Spearman: $(corspearman(comp_df.v_unique, comp_df.rank))")
-println("Corr: $(cor(comp_df.v_unique, comp_df.rank))")
+println("Spearman: $(corspearman(comp_df.v_unique, comp_df.v_hat))")
+println("Corr: $(cor(comp_df.v_unique, comp_df.v_hat))")
 
 
 
+######## Simulations #########
+# %%
+λ_grid = 0.2:0.05:0.95
+nk_grid = 3:1:10
+ni_grid = 10_000
+
+function sim_over_grid(N, λ_grid, nk_grid, ni_grid)
+
+    param_grid = collect(Iterators.product(λ_grid, nk_grid, ni_grid))[:]
+    param_grid = repeat(param_grid, N)
+    result_df = DataFrame(param_grid)
+    rename!(result_df, [:λ, :nk, :ni])
+
+    result_df[!, "cor"] .= 99.0
+    result_df[!, "spearman_cor"] .= 99.0
+Threads.@threads for i = 1:size(result_df, 1)
+        param_realisation = param_grid[i]
+        sim_param = simparams(
+            λ = param_realisation[1],
+            nk = param_realisation[2],
+            ni = param_realisation[3],
+            fpt = 2)
+        sim_df = draw_sim(sim_param)
+
+        v_hat = estimate_v(sim_df)
+        true_v_df = extract_true_v(sim_df)
+
+
+        v_hat_df = DataFrame([1:length(v_hat), v_hat], [:j, :v_hat])
+
+
+        comp_df = innerjoin(true_v_df, v_hat_df, on = :j)
+
+        corr_spear = corspearman(comp_df.v_unique, comp_df.v_hat)
+        corr = cor(comp_df.v_unique, comp_df.v_hat)
+        result_df[i, "cor"] = corr
+        result_df[i, "spearman_cor"] = corr_spear
+    end
+    return result_df
+end
 
 
 
+# %%
 
+λ_sims = sim_over_grid(1000, λ_grid, 8, 100_000)
+
+# %%
+mean_df = @chain λ_sims begin
+    groupby(:λ)
+    @combine(
+        :mean_cor = mean(:cor),
+        :mean_rank_cor = mean(:spearman_cor)
+     )
+end
+
+plot(
+    mean_df.λ,
+    mean_df.mean_cor,
+    linetype = :scatter
+)
+# %%
 ############### CLARAS STUFF NOT ED ANYMORE #################
 
 
