@@ -304,7 +304,7 @@ println("Corr: $(cor(comp_df.v_unique, comp_df.v_hat))")
 
 ######## Simulations #########
 # %%
-λ_grid = 0.2:0.05:0.95
+λ_grid = 0.2:0.1:0.95
 nk_grid = 3:1:10
 ni_grid = 10_000
 
@@ -346,10 +346,57 @@ end
 
 
 # %%
+function sim_metrics(df, col; create_plot = true)
+    mean_df = @chain df begin
+        groupby(col)
+        @combine(
+            :mean_cor = mean(:cor),
+            :mean_cor_rank = mean(:spearman_cor),
+            :sd_cor = var(:spearman_cor)
+        )
+    end
 
-λ_sims = sim_over_grid(1000, λ_grid, 8, 100_000)
+    if create_plot == true
+        p = plot(
+            mean_df[!, col],
+            mean_df.mean_cor_rank,
+            linetype = :scatter,
+            label = "",
+            title = "Spearman Correlation, V and V̂, varying $col",
+            ylabel = "Spearman Correlation",
+            xlabel = "$col"
+            # yerror = sqrt.(mean_df.sd_cor)*1.96
+        )
+        return mean_df, p
+    end
+
+    return mean_df
+end
+# %%
+nk_sims = sim_over_grid(1_000, 0.25, 3:1:10, 10_000)
+# %%
+n_sims = sim_over_grid(100, 0.25, 20, 10_000:10_000:50_000)
+# %%
+λ_sims = sim_over_grid(500, λ_grid, 10, 10_000)
+# %%
+nk_metrics, nk_plot = sim_metrics(nk_sims, :nk)
+n_metrics, n_plot = sim_metrics(n_sims, :ni)
+λ_metrics, λ_plot = sim_metrics(λ_sims, :λ)
+# %%
+nk_plot
+n_plot
+λ_plot
+# %%
+n_sims
+
 
 # %%
+function plot_sim_results(df)
+    best_fi
+    
+end
+
+
 mean_df = @chain λ_sims begin
     groupby(:λ)
     @combine(
