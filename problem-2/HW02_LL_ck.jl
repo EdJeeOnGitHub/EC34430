@@ -271,9 +271,17 @@ function extract_true_v(df)
         groupby(:j)
         combine(:v => unique)
     end
-    return v_rank
+    size_df = @chain df begin
+        groupby([:j, :w_id])
+        combine(nrow => :count)
+    end
+    summ_df = innerjoin(
+        v_rank,
+        size_df,
+        on = :j
+    )
+    return summ_df
 end
-
 
 ################### Gen Data ##############
 # %%
@@ -295,6 +303,10 @@ v_hat_df = DataFrame([1:length(v_hat), v_hat], [:j, :v_hat])
 
 
 comp_df = innerjoin(true_v_df, v_hat_df, on = :j)
+comp_df = @chain comp_df begin
+    @transform(:old_v_hat = :v_hat, 
+               :v_hat = :count .* :v_hat)
+end
 
 
 println("Spearman: $(corspearman(comp_df.v_unique, comp_df.v_hat))")
@@ -334,7 +346,11 @@ Threads.@threads for i = 1:size(result_df, 1)
 
 
         comp_df = innerjoin(true_v_df, v_hat_df, on = :j)
-
+        
+        comp_df = @chain comp_df begin
+            @transform(:old_v_hat = :v_hat, 
+                    :v_hat = :count .* :v_hat)
+        end
         corr_spear = corspearman(comp_df.v_unique, comp_df.v_hat)
         corr = cor(comp_df.v_unique, comp_df.v_hat)
         result_df[i, "cor"] = corr
@@ -375,7 +391,7 @@ end
 # %%
 nk_sims = sim_over_grid(1_000, 0.25, 3:1:10, 10_000)
 # %%
-n_sims = sim_over_grid(100, 0.25, 20, 10_000:10_000:50_000)
+n_sims = sim_over_grid(1, 0.25, 20, 10_000:10_000:50_000)
 # %%
 λ_sims = sim_over_grid(500, λ_grid, 10, 10_000)
 # %%
