@@ -9,7 +9,6 @@ using DataFrames
 using Plots
 using Optim
 using Random
-using SparseRegression
 
 
 function wls_obj(β, y, x, w_ijk)
@@ -17,9 +16,10 @@ function wls_obj(β, y, x, w_ijk)
 end
 
 
-N=1000
-T=4
+N =1000
+T = 4
 K = 3
+nIter = 1000
 ω_ijk = zeros(N,K)
 lpm = zeros(N,K)
 
@@ -32,52 +32,62 @@ p_k = rand(Dirichlet(ones(K)))
 Y = rand(N, T)
 
 ω_num_k = zeros(N, K)
+logLikList = zeros(nIter)
+logLikList[1] = 4
 
-for kk = 1:nIter
+tol = 0.0001
 
-    lik = 0
-    for ii in 1:N
-        for kk in 1:K
-            # Get pdf evaluated at each period cond on μ_kt and σ_kt:
-            norm_pdf_k = pdf.(Normal.(μ_kt[kk,:], σ_kt[kk,:]) , Y[ii,:])
-            ω_num_k[ii,kk] = p_k[kk]*prod(norm_pdf_k) # p_k × ∏_t ϕ(y_{ii,t})
-        end
-        lik  += sum(log.(ω_num_k[ii,:]))
-        ω_ijk[ii,:] = ω_num_k[ii,:]./sum(ω_num_k[ii,:])
-    end
-
-    # The M - maximization step:
-    Identity = Matrix(I, K, K)
-    for tt in 1:T
-
-        DY     = kron(Y[:,1], ones(K))
-        Dkj    = kron(ones(N),Identity)
-
-        # Mu:
-        func(β) = wls_obj(β, DY, Dkj, w_ijk)
-        params0 = rand(K)
-        res = optimize(func, params0, LBFGS(), Optim.Options(iterations = 1000))
-        β_hat = Optim.minimizer(res)
-
-        # Get residual
-        resid = ((DY - Dkj*params_hat).^2)./w_ijk
-        # Sigma:
-        func(σ) = wls_obj(σ, resid, Dkj1, w_ijk)
-        params0 = rand(K)
-        res = optimize(func, params0, LBFGS(), Optim.Options(iterations = 1000))
-        σ_hat = Optim.minimizer(res)
-
-
-        #Update:
-        μ_kt[:,tt] = sqrt.(params_hat)
-        σ_kt[:,tt] = sqrt.(σ_hat)
-    end
+for kk in 3:nIter
 
     # Compare lik_Lag vs Lik now,
     # if less than tol, end.
+    if abs(logLikList[kk - 2] - logLikList[kk-1]) > tol 
+
+        println(logLikList[kk - 1] - logLikList[kk])
+
+        lik = 0
+        for ii in 1:N
+            for kk in 1:K
+                # Get pdf evaluated at each period cond on μ_kt and σ_kt:
+                norm_pdf_k = pdf.(Normal.(μ_kt[kk,:], σ_kt[kk,:]) , Y[ii,:])
+                ω_num_k[ii,kk] = p_k[kk]*prod(norm_pdf_k) # p_k × ∏_t ϕ(y_{ii,t})
+            end
+            lik  += sum(log.(ω_num_k[ii,:]))
+            ω_ijk[ii,:] = ω_num_k[ii,:]./sum(ω_num_k[ii,:])
+        end
+        logLikList[kk] = lik
+
+        # The M - maximization step:
+        Identity = Matrix(I, K, K)
+        for tt in 1:T
+
+            DY     = kron(Y[:,tt], ones(K))
+            Dkj    = kron(ones(N),Identity)
+
+            # Mu:
+            w = ω_ijk[:]
+            func_μ(β) = wls_obj(β, DY, Dkj, w)
+            params0 = rand(K)
+            res = optimize(func_μ, params0, LBFGS(), Optim.Options(iterations = 1000))
+            μ_hat = Optim.minimizer(res)
+
+            # Get residual
+            resid = ((DY - Dkj*μ_hat).^2)./w
+
+            # Sigma:
+            func_σ(σ) = wls_obj(σ, resid, Dkj, w)
+            params0 = rand(K)
+            res = optimize(func_σ, params0, LBFGS(), Optim.Options(iterations = 1000))
+            σ_hat = Optim.minimizer(res)
+
+            #Update:
+            μ_kt[:,tt] = μ_hat
+            σ_kt[:,tt] = sqrt.(σ_hat)
+        end
+    else
+        break
+    end
+
 end
 
 
-wls_obj(params0, DY1, Dkj1, w_ijk)
-
-sum(log.(w_ijk.*pdf(Normal(0,1),(DY1 .- Dkj1*β0)./σ0)))
