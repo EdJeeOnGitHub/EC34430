@@ -53,10 +53,12 @@ end
 
 # TODO: This step is probably wrong?
 function maximisation(Y, posterior)
+    Y = Y_test 
+    posterior = e_1  
     N = size(Y, 1)
     p_k = vec(sum(posterior, dims = 1) ./ N)
-    μ = vec(sum(p_k' .* Y, dims = 1) ./ sum(p_k, dims = 1))
-    σ = vec(sqrt.(sum(p_k' .* (Y .- μ').^2, dims = 1 ) ./ sum(p_k, dims = 1)))
+    μ = vec(sum(posterior' .* Y, dims = 1) ./ sum(posterior, dims = 1))
+    σ = vec(sqrt.(sum(posterior' .* (Y .- μ').^2, dims = 1 ) ./ sum(posterior, dims = 1)))
     return p_k, μ, σ
 end
 
