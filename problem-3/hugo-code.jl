@@ -1,270 +1,214 @@
 # %%
 using Random, 
       Distributions,
-      LinearAlgebra
-      
-#struct lognormpdf 
-    #Y::Array{Float64}
-    #mu::Array{Float64}
-    #sigma::Array{Float64}
+      LinearAlgebra,
+      StatsBase
+Random.seed!(123)
+function lognormpdf(Y,#::Array{Float64},
+                    mu,#::Array{Float64},
+                    sigma)#::Array{Float64})
 
-    function lognormpdf(Y,#::Array{Float64},
-                        mu,#::Array{Float64},
-                        sigma)#::Array{Float64})
+    -0.5 * (  (Y-mu) / sigma )^2   - 0.5 * log(2.0*pi) - log(sigma)  
 
-        -0.5 * (  (Y-mu) / sigma )^2   - 0.5 * log(2.0*pi) - log(sigma)  
+end
 
-    end
-#end   
-
-struct logsumexp
-    #v::Array{Float64}
-
-    function logsumexp(v)#::Array{Float64})
-
+function logsumexp(v)#::Array{Float64})
     vm = max(v)
     log(sum(exp(v-vm))) + vm
-    end
 end
 
-struct reciprocal 
-    function reciprocal(x)
-        recip = 1/x
-    end
-end
 
-struct WLS
+function WLS(X,
+                Y,
+                Ω)
 
-    function WLS(X,
-                 Y,
-                 Ω)
-    
     # Note that this takes in the variance covariance matrix in vector form
     # Note that Omega must be a diagonal matrix for this to work
-    invΩ = reciprocal.(Ω)
-        invΩ = diagm(invΩ)
+    invΩ = 1 ./ Ω
+    invΩ = diagm(invΩ)
 
-    β = inv(X'*invΩ*X)*X'*invΩ*Y
+    β = inv(X'*invΩ*X)*(X'*invΩ*Y)
             
-    return(β)
-    end
+    return β
 end
 
 function Expectation(Y1,
                      Y2,
                      Y3,
-                     μ,
-                     σ,
-                     τ,
+                     μ_input,
+                     σ_input,
+                     τ_input,
                      N,
                      nk)
-    
-        Y1 = Y1_test
-        Y2 = Y2_test
-        Y3 = Y3_test 
-        μ = μ_test
-        σ = σ_test
-        π = π_test
-        N = 1000
-        nk = 5 
-                     lnorm1 = Array{Float64, 2}(undef, N, nk)
-                     lnorm2 = Array{Float64, 2}(undef, N, nk)
-                     lnorm3 = Array{Float64, 2}(undef, N, nk)
-                     lall = Array{Float64, 2}(undef, N, nk)
-                     lik = Array{Float64, 2}(undef, N, nk)
-                     lpm = Array{Float64, 2}(undef, N, nk)
+    lnorm1 = Array{Float64, 2}(undef, N, nk)
+    lnorm2 = Array{Float64, 2}(undef, N, nk)
+    lnorm3 = Array{Float64, 2}(undef, N, nk)
+    lall = Array{Float64, 2}(undef, N, nk)
+    lik = Array{Float64, 2}(undef, N, nk)
 
-    lτ = log.(τ)
+    lτ = log.(τ_input)
+    τ_output = similar(τ_input)
     for i in 1:N  
-        lnorm1[i,:] = lognormpdf.(Y1[i],μ[1,:],σ[1,:])
-        lnorm2[i,:] = lognormpdf.(Y2[i],μ[2,:],σ[2,:])
-        lnorm3[i,:] = lognormpdf.(Y3[i],μ[3,:],σ[3,:])
+        lnorm1[i,:] = lognormpdf.(Y1[i],μ_input[1,:],σ_input[1,:])
+        lnorm2[i,:] = lognormpdf.(Y2[i],μ_input[2,:],σ_input[2,:])
+        lnorm3[i,:] = lognormpdf.(Y3[i],μ_input[3,:],σ_input[3,:])
     end
     lall = lτ + lnorm1 + lnorm2 + lnorm3
     lik = lik + logsumexp.(lall)
-
-    for i in 1:N  
-        τ[i,:] = exp.(lall[i,:]) ./ sum(exp.(lall[i,:]))
-    end
-    τ
-    return(τ,lik)
     
+    for i in 1:N  
+        τ_output[i,:] = exp.(lall[i,:]) ./ sum(exp.(lall[i,:]))
+    end
+    
+    return τ_output, lik
 end
 
 function Maximization(Y1, 
-                      Y2,
-                      Y3,
-                      μ,
-                      σ,
-                      τ, 
-                      N,
-                      nk)
-                      
-    DY1 = kron(Y1,1* Matrix(I, nk, nk))
-    DY2 = kron(Y2,1* Matrix(I, nk, nk))
-    DY3 = kron(Y3,1* Matrix(I, nk, nk))
+                Y2,
+                Y3,
+                τ, 
+                N,
+                nk)
 
-    Dkj1 = kron(fill(1, (N,1)), 1* Matrix(I, nk, nk))
-    Dkj2 = kron(fill(1, (N,1)), 1* Matrix(I, nk, nk))  
-    Dkj3 = kron(fill(1, (N,1)), 1* Matrix(I, nk, nk))
+μ_output = Matrix{Float64}(undef, (3,nk))
+σ_output = Matrix{Float64}(undef, (3,nk))
+    
+DY1 = kron(Y1,fill(1, (nk,1)))
+DY2 = kron(Y2,fill(1, (nk,1)))
+DY3 = kron(Y3,fill(1, (nk,1)))
 
-    Ω1 = vec(reshape(τ, size(DY1, 1),1))
-    Ω2 = vec(reshape(τ, size(DY2, 1),1))
-    Ω3 = vec(reshape(τ, size(DY3, 1),1))
+Dkj1 = kron(fill(1, (N,1)), 1* Matrix(I, nk, nk))
+Dkj2 = kron(fill(1, (N,1)), 1* Matrix(I, nk, nk))  
+Dkj3 = kron(fill(1, (N,1)), 1* Matrix(I, nk, nk))
 
-    WLS1 = WLS(Dkj1, DY1, Ω1)
-    WLS2 = WLS(Dkj2, DY2, Ω2)
-    WLS3 = WLS(Dkj3, DY3, Ω3)
+Ω1 = vec(reshape(τ', size(DY1, 1),1))
+Ω2 = vec(reshape(τ', size(DY2, 1),1))
+Ω3 = vec(reshape(τ', size(DY3, 1),1))
 
-    for i in 1:nk  
-        μ[1,i] = 1/N*sum(Dkj1[:,1].*WLS1[i,i])
-        σ[1,i] = sqrt(1/N*sum((DY1[:,i] - Dkj1[:,1].*WLS1[i,i]).^2))
-    end
-    for i in 1:nk  
-        μ[2,i] = 1/N*sum(Dkj2[:,1].*WLS2[i,i])
-        σ[2,i] = sqrt(1/N*sum((DY2[:,i] - Dkj2[:,1].*WLS2[i,i]).^2))
-    end
-    for i in 1:nk  
-        μ[3,i] = 1/N*sum(Dkj3[:,1].*WLS3[i,i])
-        σ[3,i] = sqrt(1/N*sum((DY3[:,i] - Dkj3[:,1].*WLS3[i,i]).^2))
-    end
 
-    return(μ,σ)
+
+WLS1 = WLS(Dkj1, DY1, Ω1)
+WLS2 = WLS(Dkj2, DY2, Ω2)
+WLS3 = WLS(Dkj3, DY3, Ω3)
+
+for i in 1:nk  
+μ_output[1,i] = 1/N*sum(Dkj1[:,1].*WLS1[i])
+σ_output[1,i] = sqrt(1/N*sum((Y1 - Dkj1[:,1][Dkj1[:,1].>0].*WLS1[i]).^2))
+end
+for i in 1:nk  
+μ_output[2,i] = 1/N*sum(Dkj2[:,1].*WLS2[i])
+σ_output[2,i] = sqrt(1/N*sum((Y2 - Dkj2[:,1][Dkj2[:,1].>0].*WLS2[i]).^2))
+end
+for i in 1:nk  
+μ_output[3,i] = 1/N*sum(Dkj3[:,1].*WLS3[i])
+σ_output[3,i] = sqrt(1/N*sum((Y3 - Dkj3[:,1][Dkj3[:,1].>0].*WLS3[i]).^2))
 end
 
-function ExpectationMaximization(Y1,Y2,Y3,μ,σ,π,N,nk)
+return μ_output, σ_output
+end
 
-        Y1 = Y1_test
-        Y2 = Y2_test
-        Y3 = Y3_test 
-        μ = μ_test
-        σ = σ_test
-        π = π_test
-        N = 1000
-        nk = 5 
+# %% DGP
 
-    τ = repeat(π,N)
-        τ = reshape(τ, N, nk)
 
-    exp_update = Expectation(Y1,Y2,Y3,μ,σ,τ,N,nk)
-
-    τ_update = exp_update[1]
-    lik_update = sum(exp.(exp_update[2]))
-
-    max_update = Maximization(Y1,Y2,Y3,μ,σ,τ_update,N,nk)
-
-    μ_update = max_update[1]
-    σ_update = max_update[2]
-
-    iter = 0
-    lik_diff = 0
-  
-
-    while lik_diff > 1e-2 || iter < 10
-    
-    
-        lik = lik_update
-    
-        exp_update = Expectation(Y1,Y2,Y3,μ_update,σ_update,τ_update,N,nk)
-        
-        τ_update = exp_update[1]
-        lik_update = sum(exp.(exp_update[2]))
-
-        max_update = Maximization(Y1,Y2,Y3,μ_update,σ_update,τ_update,N,nk)
-
-        μ_update = max_update[1]
-        σ_update = max_update[2]
-    
-        
-        lik_diff = lik_update - lik
-        
-        
-        
-    
-        iter = iter + 1
-        
-    
+function sim_data(k,n, T; doplot = false)
+    # true values
+    μ = randn(k)*10 .+ collect(1:k)
+    σ = abs.(randn(k))
+    p = rand(k)
+    p = p / sum(p)
+    K_draw = sample(1:k, Weights(p), n, replace = true)
+    Y = Matrix{Float64}(undef, n, T)
+    for t in 1:T
+        Y[:, t] = rand.(Normal.(μ[K_draw], σ[K_draw])) 
     end
 
-    return(τ_update, lik_update, μ_update, σ_update, iter)
+    return Dict(:y => Y, :μ => μ, :σ => σ, :p => p, :K_draw => K_draw)
+end
 
+function create_initial_values(k, n, T)
+    initial_μ = Array{Float64}(repeat(collect(1:k),inner = T))
+    initial_μ = reshape(initial_μ, T,k)
+
+    initial_σ = Array{Float64}(repeat(fill(1, (k,1)),T))
+    initial_σ = reshape(initial_σ,T,k)
+
+    initial_τ = fill(1/k, (k, 1))
+    initial_τ = repeat(initial_τ, n)
+    initial_τ = reshape(initial_τ, n, k)
+    return initial_μ, initial_τ, initial_σ
 end
 
 
-# %%
+# EM funcs
 
-N = 1000
-nk = 5
-tau = Array{Float64, 2}(undef, N, nk)
-lpm = Array{Float64, 2}(undef, N, nk)
-
-
-
-# Now I'm going to randomly generate my Y's from a mixture of Gaussians with a
-π0 = fill(1/(2*nk), ((2*nk),1))
-# This gives the initial values for the std dev of each Gaussian model
-σ0 = repeat(fill(1, ((2*nk),1)), 3)
-    σ0 = reshape(σ0,3,(2*nk))
-# This gives the initial values for the means of each Gaussian model
-μ0 = repeat(collect(1:(2*nk)),inner = 3)
-   μ0 = reshape(μ0, 3,(2*nk))
-# Simulating the Sample from the true DGP constructed from π0, μ0 and σ0
-Y = rand(MvNormal(μ0[1,:], I), 3*N)
-    Y = π0' * Y
-    Y = Y'
-
-Y1 = Y[1:N]
-Y2 = Y[N+1:2*N]
-Y3 = Y[2*N+1:3*N]
-
-# This denotes the initial probability assigned to each Gaussian model
-π_test = fill(1/nk, (nk,1))
-# This gives the initial values for the std dev of each Gaussian model
-σ = Array{Float64}(repeat(fill(1, (nk,1)),3))
-σ = reshape(σ,3,nk)
-# This gives the initial values for the means of each Gaussian model
-μ = Array{Float64}(repeat(collect(1:nk),inner = 3))
-μ = reshape(μ, 3,nk)
-
-
-
-    τ = repeat(π_test,N)
-        τ = reshape(τ, N, nk)
-
-    
-    exp_update = Expectation(Y1,Y2,Y3,μ,σ,τ,N,nk)
-
+function em!(Y1, Y2, Y3, μ, σ, τ)
+    N = length(Y1)
+    nk = size(μ, 2)
+    exp_update = Expectation(Y1, Y2, Y3, μ, σ, τ, N, nk)
     τ_update = exp_update[1]
-    lik_update = sum(exp.(exp_update[2]))
+    # lik_update = sum(exp.(exp_update[2]))
 
-    max_update = Maximization(Y1,Y2,Y3,μ,σ,τ_update,N,nk)
+    max_update = Maximization(Y1, Y2, Y3, τ_update, N, nk)
 
     μ_update = max_update[1]
     σ_update = max_update[2]
+    return μ_update, σ_update, τ_update
+end
 
+fake_sim_data = sim_data(5, 500, 3)
+Y_test = fake_sim_data[:y]
+Y1_test = Y_test[:, 1]
+Y2_test = Y_test[:, 2]
+Y3_test = Y_test[:, 3]
+μ_test, τ_test, σ_test = create_initial_values(5, 500, 3)
+μ_output, σ_output, τ_output = em!(Y1_test, Y2_test, Y3_test, μ_test, σ_test, τ_test)
+
+println("μ_output: $μ_output")
+println("μ_test: $μ_test")
+
+function find_diff(x, new_x)
+    maximum(abs.(x .- new_x))
+end
+
+function em(Y, k)
+    T = size(Y, 2)
+    if T != 3
+        error("You've hardcoded T = 3 dumbass")
+    end
+    n = size(Y, 1)
+    μ, τ, σ = create_initial_values(k, n, T)
+    diff = Inf
     iter = 0
-    lik_diff = 0
-  
+    while diff > 1e-6
+        iter += 1
+        println("Iter: $iter")
+        new_μ, new_σ, new_τ = em!(Y[:, 1], Y[:, 2], Y[:, 3], μ, σ, τ)
+        μ_diff = find_diff(μ, new_μ)
+        σ_diff = find_diff(σ, new_σ)
+        τ_diff = find_diff(τ, new_τ)
+        diff = maximum([μ_diff, σ_diff, τ_diff])
+        if (iter > 200)
+            return new_μ, new_σ, new_τ
+        end
+    end
+    return new_μ, new_σ, new_τ
+end
 
-    # while lik_diff > 1e-9 || iter < 10
-    
-    
-        lik = lik_update
-    
-    
-        
-        lik_update = sum(ExpectationMaximization(Y1,Y2,Y3,μ_update,σ_update,τ,N,nk)[1])
-        μ_update = ExpectationMaximization(Y1,Y2,Y3,μ,σ,π,N,nk)[2]
-        σ_update = ExpectationMaximization(Y1,Y2,Y3,μ,σ,π,N,nk)[3]
-        
-    
-        iter = iter + 1
-        iter
-    
-    # end
-    
-  μ_update 
+res_μ, res_σ, res_τ = em(Y_test, 5)
+res_μ
+fake_sim_data[:μ]
 
-Expectation(Y1, Y2, Y3, μ, σ, π, N, nk)
+_, max_inds = findmax(res_τ, dims = 2)
+most_likely_k = [ind[2] for ind in max_inds]
+most_likely_k
 
-x = ExpectationMaximization(Y1,Y2,Y3,μ,σ,π,N,nk)
+
+[sum(fake_sim_data[:K_draw] .== k) for k in 1:3]
+[sum(most_likely_k[:] .== k) for k in 1:3]
+fake_sim_data[:p]
+
+using Plots
+histogram(Y_test[:,3], bins = 60)
+res_τ == maximum
+
+em!(Y_test[:, 1], Y_test[:, 2], Y_test[:, 3], μ_test, σ_test, τ_test)
