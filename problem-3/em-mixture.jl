@@ -47,8 +47,8 @@ end
 
 
 
-N =1000
-T = 4
+N =10000
+T = 1
 K = 3
 nIter = 10000
 ω_ijk = zeros(N,K)
@@ -77,7 +77,7 @@ for rr in 3:nIter
     # if less than tol, end.
     if abs(logLikList[rr - 2] - logLikList[rr-1]) > tol 
 
-        println(logLikList[rr - 1] - logLikList[rr])
+        println(abs(logLikList[rr - 2] - logLikList[rr-1]))
 
         lik = 0
         for ii in 1:N
@@ -87,10 +87,13 @@ for rr in 3:nIter
                 ω_num_k[ii,kk] = p_k[kk]*prod(norm_pdf_k) 
             end
             ω_ijk[ii,:] = ω_num_k[ii,:]./sum(ω_num_k[ii,:])
-            lik  += log(sum(ω_num_k[ii,:]))
+            # lik += log(sum(ω_num_k[ii,:]))
         end
         
         p_k = mean(ω_ijk, dims=1)[:]#I believe this part is wrong
+        
+        mixture = MixtureModel(Normal, [(μ_kt[k,tt], σ_kt[k,tt]) for k in 1:K], p_k)
+        lik += sum(logpdf(mixture, Y))
         logLikList[rr] = lik
 
         # The M - maximization step:
@@ -122,7 +125,8 @@ for rr in 3:nIter
 
             #Update:
             μ_kt[:,tt] = μ_hat
-            σ_kt[:,tt] = sqrt.(σ_hat)
+            σ_kt[:,tt] .= 1
+            # σ_kt[:,tt] = sqrt.(σ_hat)
         
         end
     else
@@ -130,7 +134,6 @@ for rr in 3:nIter
     end
 
 end
-
 
 
 μ_true
