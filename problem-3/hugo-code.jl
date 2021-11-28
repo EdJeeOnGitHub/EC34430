@@ -28,8 +28,8 @@ function WLS(X,
     invΩ = diagm(invΩ)
 
     β = inv(X'*invΩ*X)*(X'*invΩ*Y)
-            
-    return β
+    resid = Y - X*β 
+    return β, resid
 end
 
 function Expectation(Y1,
@@ -50,8 +50,8 @@ function Expectation(Y1,
     τ_output = similar(τ_input)
     for i in 1:N  
         lnorm1[i,:] = lognormpdf.(Y1[i],μ_input[1,:],σ_input[1,:])
-        lnorm2[i,:] = lognormpdf.(Y2[i],μ_input[2,:],σ_input[2,:])
-        lnorm3[i,:] = lognormpdf.(Y3[i],μ_input[3,:],σ_input[3,:])
+        lnorm2[i,:] = lognormpdf.(Y2[i],μ_input[2, :],σ_input[2, :])
+        lnorm3[i,:] = lognormpdf.(Y3[i],μ_input[3, :],σ_input[3, :])
     end
     lall = lτ + lnorm1 + lnorm2 + lnorm3
     lik = lik + logsumexp.(lall)
@@ -87,22 +87,21 @@ Dkj3 = kron(fill(1, (N,1)), 1* Matrix(I, nk, nk))
 
 
 
-WLS1 = WLS(Dkj1, DY1, Ω1)
-WLS2 = WLS(Dkj2, DY2, Ω2)
-WLS3 = WLS(Dkj3, DY3, Ω3)
+WLS1, resid_1 = WLS(Dkj1, DY1, Ω1)
+WLS2, resid_2 = WLS(Dkj2, DY2, Ω2)
+WLS3, resid_3 = WLS(Dkj3, DY3, Ω3)
 
-for i in 1:nk  
-μ_output[1,i] = 1/N*sum(Dkj1[:,1].*WLS1[i])
-σ_output[1,i] = sqrt(1/N*sum((Y1 - Dkj1[:,1][Dkj1[:,1].>0].*WLS1[i]).^2))
-end
-for i in 1:nk  
-μ_output[2,i] = 1/N*sum(Dkj2[:,1].*WLS2[i])
-σ_output[2,i] = sqrt(1/N*sum((Y2 - Dkj2[:,1][Dkj2[:,1].>0].*WLS2[i]).^2))
-end
-for i in 1:nk  
-μ_output[3,i] = 1/N*sum(Dkj3[:,1].*WLS3[i])
-σ_output[3,i] = sqrt(1/N*sum((Y3 - Dkj3[:,1][Dkj3[:,1].>0].*WLS3[i]).^2))
-end
+fit_v_1, _ = WLS(Dkj1, resid_1.^2, Ω1)
+fit_v_2, _ = WLS(Dkj2, resid_2.^2, Ω2)
+fit_v_3, _ = WLS(Dkj3, resid_3.^2, Ω3)
+
+μ_output[1, :] = WLS1
+μ_output[2, :] = WLS2
+μ_output[3, :] = WLS3
+
+σ_output[1, :] = fit_v_1
+σ_output[2, :] = fit_v_2
+σ_output[3, :] = fit_v_3
 
 return μ_output, σ_output
 end
@@ -112,8 +111,12 @@ end
 
 function sim_data(k,n, T; doplot = false)
     # true values
-    μ = randn(k)*10 .+ collect(1:k)
-    σ = abs.(randn(k))
+    μ = randn(k) 
+    for i in 1:k
+        μ[i] = (μ[i]+2*i)*(-1)^i
+    end
+
+    σ = abs.(randn(k))./2
     p = rand(k)
     p = p / sum(p)
     K_draw = sample(1:k, Weights(p), n, replace = true)
@@ -132,9 +135,9 @@ function create_initial_values(k, n, T)
     initial_σ = Array{Float64}(repeat(fill(1, (k,1)),T))
     initial_σ = reshape(initial_σ,T,k)
 
-    initial_τ = fill(1/k, (k, 1))
-    initial_τ = repeat(initial_τ, n)
-    initial_τ = reshape(initial_τ, n, k)
+    initial_τ = rand(n, k)
+    initial_τ = initial_τ ./ sum(initial_τ, dims = 2)
+
     return initial_μ, initial_τ, initial_σ
 end
 
@@ -155,12 +158,16 @@ function em!(Y1, Y2, Y3, μ, σ, τ)
     return μ_update, σ_update, τ_update
 end
 
-fake_sim_data = sim_data(5, 500, 3)
+nk_test = 2
+n_test = 100
+
+fake_sim_data = sim_data(nk_test, n_test, 3)
 Y_test = fake_sim_data[:y]
 Y1_test = Y_test[:, 1]
 Y2_test = Y_test[:, 2]
 Y3_test = Y_test[:, 3]
-μ_test, τ_test, σ_test = create_initial_values(5, 500, 3)
+μ_test, τ_test, σ_test = create_initial_values(nk_test, n_test, 3)
+fake_sim_data[:μ]
 μ_output, σ_output, τ_output = em!(Y1_test, Y2_test, Y3_test, μ_test, σ_test, τ_test)
 
 println("μ_output: $μ_output")
@@ -179,36 +186,44 @@ function em(Y, k)
     μ, τ, σ = create_initial_values(k, n, T)
     diff = Inf
     iter = 0
-    while diff > 1e-6
+    while diff > 1e-1
         iter += 1
         println("Iter: $iter")
         new_μ, new_σ, new_τ = em!(Y[:, 1], Y[:, 2], Y[:, 3], μ, σ, τ)
         μ_diff = find_diff(μ, new_μ)
         σ_diff = find_diff(σ, new_σ)
         τ_diff = find_diff(τ, new_τ)
-        diff = maximum([μ_diff, σ_diff, τ_diff])
-        if (iter > 200)
+        diff = maximum(μ_diff)
+        if (iter > 20)
             return new_μ, new_σ, new_τ
         end
     end
     return new_μ, new_σ, new_τ
 end
 
-res_μ, res_σ, res_τ = em(Y_test, 5)
+res_μ, res_σ, res_τ = em(Y_test, 2)
 res_μ
 fake_sim_data[:μ]
+
+
+res_σ
+fake_sim_data[:σ]
+
 
 _, max_inds = findmax(res_τ, dims = 2)
 most_likely_k = [ind[2] for ind in max_inds]
 most_likely_k
 
 
-[sum(fake_sim_data[:K_draw] .== k) for k in 1:3]
-[sum(most_likely_k[:] .== k) for k in 1:3]
+[sum(fake_sim_data[:K_draw] .== k) for k in 1:nk_test]
+[sum(most_likely_k[:] .== k) for k in 1:nk_test]
 fake_sim_data[:p]
 
 using Plots
-histogram(Y_test[:,3], bins = 60)
-res_τ == maximum
-
+histogram(Y_test[:,1], bins = 60)
+plot!(
+    res_μ[1, :], 
+    seriestype = :vline, 
+    linewidth = 5,
+    label = "Estimated Means")
 em!(Y_test[:, 1], Y_test[:, 2], Y_test[:, 3], μ_test, σ_test, τ_test)
