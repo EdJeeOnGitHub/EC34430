@@ -49,7 +49,7 @@ end
 
 N =10000
 T = 1
-K = 3
+K = 2
 nIter = 10000
 ω_ijk = zeros(N,K)
 lpm = zeros(N,K)
