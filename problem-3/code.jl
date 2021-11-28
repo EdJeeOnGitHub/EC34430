@@ -34,7 +34,7 @@ struct hugo_logsumexp
     end
 end
 
-function sdata(k,n, T; doplot = false)
+function sim_data(k,n, T; doplot = false)
     # true values
     μ = randn(k)*10
     σ = abs.(randn(k))
@@ -50,8 +50,12 @@ function sdata(k,n, T; doplot = false)
 end
 
 
+ed_data = sdata(5, 1000, 5)
+ed_data[:y][:, 1]
+using Plots
 
-
+ed_data[:μ]
+histogram(ed_data[:y][:, 1], bins = 50)
 
 function expectation(Y, p_k, μ_k, σ_k)
     # Y = rand(10, 3)
@@ -86,18 +90,18 @@ struct fake_hugo_data
     π::Array
     σ::Array
     function fake_hugo_data()
-    N = 1000
+    N = 10
     nk = 5
     tau = Array{Float64, 2}(undef, N, nk)
     lpm = Array{Float64, 2}(undef, N, nk)
     # Now I'm going to randomly generate my Y's from a mixture of Gaussians with a
-    π0 = fill(1/(2*nk), ((2*nk),1))
+    π0 = fill(1/(nk), ((nk),1))
     # This gives the initial values for the std dev of each Gaussian model
-    σ0 = repeat(fill(1, ((2*nk),1)), 3)
-        σ0 = reshape(σ0,3,(2*nk))
+    σ0 = repeat(fill(1, ((nk),1)), 3)
+        σ0 = reshape(σ0,3,(nk))
     # This gives the initial values for the means of each Gaussian model
-    μ0 = repeat(collect(1:(2*nk)),inner = 3)
-    μ0 = reshape(μ0, 3,(2*nk))
+    μ0 = repeat(collect(1:(nk)),inner = 3)
+    μ0 = reshape(μ0, 3,(nk))
     # Simulating the Sample from the true DGP constructed from π0, μ0 and σ0
     Y = rand(MvNormal(μ0[1,:], I), 3*N)
         Y = π0' * Y
