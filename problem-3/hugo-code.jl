@@ -2,7 +2,8 @@
 using Random, 
       Distributions,
       LinearAlgebra,
-      StatsBase
+      StatsBase,
+      StatsPlots
 Random.seed!(123)
 function lognormpdf(Y,#::Array{Float64},
                     mu,#::Array{Float64},
@@ -91,22 +92,45 @@ WLS1, resid_1 = WLS(Dkj1, DY1, Ω1)
 WLS2, resid_2 = WLS(Dkj2, DY2, Ω2)
 WLS3, resid_3 = WLS(Dkj3, DY3, Ω3)
 
-fit_v_1, _ = WLS(Dkj1, resid_1.^2, Ω1)
-fit_v_2, _ = WLS(Dkj2, resid_2.^2, Ω2)
-fit_v_3, _ = WLS(Dkj3, resid_3.^2, Ω3)
+fit_v_1, _ = WLS(Dkj1, (resid_1.^2)./Ω1, Ω1)
+fit_v_2, _ = WLS(Dkj2, (resid_2.^2)./Ω2, Ω2)
+fit_v_3, _ = WLS(Dkj3, (resid_3.^2)./Ω3, Ω3)
 
 μ_output[1, :] = WLS1
 μ_output[2, :] = WLS2
 μ_output[3, :] = WLS3
 
-σ_output[1, :] = fit_v_1
-σ_output[2, :] = fit_v_2
-σ_output[3, :] = fit_v_3
+σ_output[1, :] = sqrt.(fit_v_1)
+σ_output[2, :] = sqrt.(fit_v_2)
+σ_output[3, :] = sqrt.(fit_v_3)
 
 return μ_output, σ_output
 end
 
+
+
+
+function florian_max(Y1, Y2, Y3, p, T, k)
+    y = hcat(
+        Y1,
+        Y2,
+        Y3
+    )
+    μ = Matrix{Float64}(undef, T, k)
+    σ = similar(μ)
+    μ[:, :] = y' * p ./ sum(p, dims = 1)
+    for i = 1:k
+        σ[:, i] = sqrt.(
+            ((y .- μ[:, i]').^2)' * p[:, i]
+        ) ./ sum(p[:, i])
+    end
+    return μ, σ
+end
 # %% DGP
+# y = rand(100, 3)
+# mu = rand(3, 2)
+# tau = rand(100, 2)
+# (((y .- mu[:, 1]').^2)' * tau[:, 1] ) ./ sum(tau[:, 1])
 
 
 function sim_data(k,n, T; doplot = false)
@@ -143,7 +167,6 @@ end
 
 
 # EM funcs
-
 function em!(Y1, Y2, Y3, μ, σ, τ)
     N = length(Y1)
     nk = size(μ, 2)
@@ -151,15 +174,15 @@ function em!(Y1, Y2, Y3, μ, σ, τ)
     τ_update = exp_update[1]
     # lik_update = sum(exp.(exp_update[2]))
 
-    max_update = Maximization(Y1, Y2, Y3, τ_update, N, nk)
-
+    # max_update = Maximization(Y1, Y2, Y3, τ_update, N, nk)
+    max_update = florian_max(Y1, Y2, Y3, τ_update, 3, nk)
     μ_update = max_update[1]
     σ_update = max_update[2]
     return μ_update, σ_update, τ_update
 end
 
 nk_test = 2
-n_test = 100
+n_test = 2000
 
 fake_sim_data = sim_data(nk_test, n_test, 3)
 Y_test = fake_sim_data[:y]
@@ -194,14 +217,14 @@ function em(Y, k)
         σ_diff = find_diff(σ, new_σ)
         τ_diff = find_diff(τ, new_τ)
         diff = maximum(μ_diff)
-        if (iter > 20)
+        if (iter > 200)
             return new_μ, new_σ, new_τ
         end
     end
     return new_μ, new_σ, new_τ
 end
 
-res_μ, res_σ, res_τ = em(Y_test, 2)
+res_μ, res_σ, res_τ = em(Y_test, nk_test)
 res_μ
 fake_sim_data[:μ]
 
@@ -221,9 +244,18 @@ fake_sim_data[:p]
 
 using Plots
 histogram(Y_test[:,1], bins = 60)
+histogram!(
+    fake_ys, bins = 60
+)
+
+fake_ys = rand(Normal(res_μ[1,2], res_σ[1,2]), 2000)
+fake_ys
+
 plot!(
     res_μ[1, :], 
     seriestype = :vline, 
     linewidth = 5,
     label = "Estimated Means")
 em!(Y_test[:, 1], Y_test[:, 2], Y_test[:, 3], μ_test, σ_test, τ_test)
+
+
