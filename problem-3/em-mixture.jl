@@ -17,9 +17,26 @@ function wls_obj(β, y, x, w_ijk)
 
 end
 
+function sigmoid(z)
+    return 1.0 ./ (1.0 + exp(-z))
+end
+
+
+function wls_lik(β, y, w_ijk, K, N)
+
+    μ = β[1]
+    σ = sigmoid.(β[2])
+    lik_i = pdf.(Normal(μ,σ), y)
+    logL = sum(log.(lik_i.*w_ijk))/(N)
+
+    return -logL
+
+end
+
+
 function generate_true_parameters(K, T)  
 
-    μ  = rand(Uniform(), (K, T)).*2
+    μ  = rand(Uniform(), (K, T)).*6
     σ  = ones((K,T))
     pk = rand(Dirichlet(ones(K)))
     
@@ -37,7 +54,7 @@ function generate_fake_data(μ, σ, pk, N, T, K)
         k = sample(1:K, Weights(pk))
         for tt in 1:T
             # draw Y1, Y2, Y3
-            Y[:,tt]  = rand(Normal(μ[k,tt] ,σ[k,tt]), N)
+            Y[ii,tt]  = rand(Normal(μ[k,tt] ,σ[k,tt]))
         end
     end
 
@@ -46,10 +63,9 @@ function generate_fake_data(μ, σ, pk, N, T, K)
 end
 
 
-
 N =10000
 T = 1
-K = 2
+K = 3
 nIter = 10000
 ω_ijk = zeros(N,K)
 lpm = zeros(N,K)
@@ -57,9 +73,13 @@ lpm = zeros(N,K)
 # Model parameters
 # Type probabilities
 
-μ_true, σ_true, pk = generate_true_parameters(K, T);
+# μ_true, σ_true, pk = generate_true_parameters(K, T);
+μ_true = [0.2, 4, 8]
+σ_true = [1,1, 1].*.5
+pk = [0.2,0.4,0.4]
 Y = generate_fake_data(μ_true, σ_true, pk, N, T, K)
 
+histogram(Y, bins=100)
 
 μ_kt = rand(K,T)
 σ_kt = rand(K,T)
@@ -89,44 +109,36 @@ for rr in 3:nIter
             ω_ijk[ii,:] = ω_num_k[ii,:]./sum(ω_num_k[ii,:])
             # lik += log(sum(ω_num_k[ii,:]))
         end
-        
-        p_k = mean(ω_ijk, dims=1)[:]#I believe this part is wrong
-        
-        mixture = MixtureModel(Normal, [(μ_kt[k,tt], σ_kt[k,tt]) for k in 1:K], p_k)
+
+        mixture = MixtureModel(Normal, [(μ_kt[k], σ_kt[k]) for k in 1:K], p_k)
         lik += sum(logpdf(mixture, Y))
         logLikList[rr] = lik
 
         # The M - maximization step:
         # Identity = Matrix(I, K, K)
+        p_k = mean(ω_ijk, dims=1)[:] #I believe this part is wrong
+
         for tt in 1:T
 
-            # DY     = kron(Y[:,tt], ones(K))
-            # Dkj    = kron(ones(N),Identity)
-
             # Use Wiemann's method:
-            μ_hat = sum(Y[:,tt] .* ω_ijk, dims=1)./sum(ω_ijk, dims=1)
-            σ_hat = sum((Y[:,tt] .- μ_kt[:,tt]').^2 .*ω_ijk, dims=1)./sum(ω_ijk, dims=1)
-
-            # # Mu:
-            # w = ω_ijk[:]
-            # func_μ(β) = wls_obj(β, DY, Dkj, w)
-            # params0 = rand(K)
-            # res = optimize(func_μ, params0, LBFGS(), Optim.Options(iterations = 1000))
-            # μ_hat = Optim.minimizer(res)
-
-            # # Get residual
-            # resid = ((DY - Dkj * μ_hat).^2)./w
-
-            # # Sigma:
-            # func_σ(σ) = wls_obj(σ, resid, Dkj, w)
-            # params0 = rand(K)
-            # res = optimize(func_σ, params0, LBFGS(), Optim.Options(iterations = 1000))
-            # σ_hat = Optim.minimizer(res)
-
-            #Update:
-            μ_kt[:,tt] = μ_hat
-            σ_kt[:,tt] .= 1
+            # μ_hat = sum(Y[:,tt] .* ω_ijk, dims=1)./sum(ω_ijk, dims=1)
+            # σ_hat = sum((Y[:,tt] .- μ_kt[:,tt]').^2 .*ω_ijk, dims=1)./sum(ω_ijk, dims=1)
+            # μ_kt[:,tt] = μ_hat
+            # σ_kt[:,tt] .= 1
             # σ_kt[:,tt] = sqrt.(σ_hat)
+
+            # Mu and sigma:
+            for kk in K
+                β=zeros(2)
+                β[1]=μ_kt[kk,tt]
+                β[2]=σ_kt[kk,tt]
+                func_μ(β) = wls_lik(β, Y, ω_ijk[:,kk], K, N)
+                res = optimize(func_μ, β, LBFGS(), Optim.Options(iterations = 1000))
+                β_hat = Optim.minimizer(res)
+
+                μ_kt[kk,tt] = β_hat[1]
+                σ_kt[kk,tt] = sigmoid.(β_hat[2])
+            end
         
         end
     else
@@ -136,11 +148,18 @@ for rr in 3:nIter
 end
 
 
+sigmoid.(μ_hat[K+1:end])
+
 μ_true
 
 μ_kt
 
-scatter(μ_true[:], μ_kt[:])
+σ_true
+
+σ_kt
+
+scatter(sort(μ_true[:]), sort(μ_kt[:]))
+scatter(sort(p_k[:]), sort(pk[:]))
 
 # Generate fake data:
 
